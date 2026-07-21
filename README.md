@@ -232,4 +232,10 @@ OTP application and package are named `ehdl`. "EHDL" is the project/brand name;
 
 ## License
 
-TODO — add a license before wider distribution.
+Dual-licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option. Unless you explicitly state otherwise, any contribution you
+submit for inclusion shall be dual-licensed as above, without additional terms.
