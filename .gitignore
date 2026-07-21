@@ -1,0 +1,51 @@
+# The directory Mix will write compiled artifacts to.
+/_build/
+
+# If you run "mix test --cover", coverage assets end up here.
+/cover/
+
+# The directory Mix downloads your dependencies sources to.
+/deps/
+
+# Where third-party dependencies like ExDoc output generated docs.
+/doc/
+
+# Temporary files, for example, from tests.
+/tmp/
+
+# If the VM crashes, it generates a dump, let's ignore it too.
+erl_crash.dump
+
+# Also ignore archive artifacts (built via "mix archive.build").
+*.ez
+
+# Ignore package tarball (built via "mix hex.build").
+ehdl-*.tar
+
+# Rust NIF build outputs.
+/native/*/target/
+/priv/native/
+
+# Compiled native libs.
+*.so
+*.dylib
+
+# Source snapshot tarballs (mix hw.snapshot).
+ehdl_snapshot_*.tar.gz
+
+# Editor / LSP / macOS cruft.
+/.elixir_ls/
+/.lexical/
+.DS_Store
+._*
+
+# Scratch / debugging artifacts (not part of the project).
+/tmp_*.exs
+/*.tar.gz
+/erl_crash.dump
+/ackout.txt
+/base_ops.v
+/counter.v
+/new_features.v
+/synth_test.v
+
