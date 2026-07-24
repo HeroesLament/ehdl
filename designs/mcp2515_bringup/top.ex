@@ -1,31 +1,42 @@
 defmodule Mcp2515Bringup.Top do
   @moduledoc """
-  MCP2515 bring-up design — the first silicon oracle for `Hw.CAN.MCP2515`.
+  MCP2515 bring-up design — silicon oracle for `Hw.CAN.MCP2515`.
 
-  Standalone (no USB, no ESP32): the 25 MHz board clock is PLL'd to 48 MHz, a
-  small controller resets the MCP2515 over SPI and then continuously reads
-  CANSTAT (0x0E), and the result is surfaced two ways so a bare board tells you
-  whether the SPI master + register engine actually work against real silicon:
+  Standalone (no USB, no ESP32): 25 MHz -> PLL -> 48 MHz, a controller resets
+  the MCP2515 over SPI, configures it (bit timing, accept-all RX, one-shot,
+  clear interrupts), requests **loopback** mode, then continuously reads CANSTAT
+  and reports it, so a bare board tells you whether the SPI master + register
+  engine + configure/set-mode sequences work against real silicon.
 
-    * US1 FTDI serial (ftdi_rxd, /dev/cu.usbserial-*): `Hw.Diag.SerialReport`
+    * US1 FTDI serial (ftdi_rxd, /dev/cu.usbserial-* @ 9600): `Hw.Diag.SerialReport`
       streams six bits per line as ASCII `b0..b5` + CRLF. Mapping:
         b0 b1 b2 = CANSTAT[7] [6] [5]  = OPMOD (operating mode)
         b3       = got_read            = a CANSTAT read has completed
         b4       = mcp_ready           = register engine idle/alive
         b5       = pll_locked          = 48 MHz clock alive
-      A healthy post-reset chip in **configuration mode** reads CANSTAT = 0x80,
-      i.e. OPMOD = 0b100, so the line begins `100...`. Expected: `100111`.
-    * LEDs mirror the full CANSTAT byte (led = CANSTAT): 0x80 lights only LED7.
+      Reset-only power-on is config mode (0x80 -> OPMOD 100). After the configure
+      + set-loopback sequence the chip should report **loopback** mode
+      (CANSTAT 0x40 -> OPMOD 010), so lines read `010111`.
+    * LEDs mirror the full CANSTAT byte (led = CANSTAT): 0x40 lights only LED6.
 
-  ## Wiring (MCP2515 moved from the CH347 to the ULX3S GPIO header)
+  ## Wiring (MCP2515 on the ULX3S GPIO header)
 
       gn13 (G5) -> SCK      gp13 (H4) -> SI/MOSI
       gn12 (F3) <- SO/MISO  gp12 (G3) -> CS
-      + common GND. Power the MCP2515 module at 3.3 V (ULX3S GPIO is 3.3 V —
-      a 5 V module's SO would over-drive gp2).
+      + common GND. Power the MCP2515 module at 3.3 V (ULX3S GPIO is 3.3 V).
 
-  Reuses the stock ULX3S board LPF: port names match its COMP names
-  (clk_25mhz, ftdi_rxd, led, gp0..gp3), so no design-specific pin file.
+  Reuses the stock ULX3S board LPF (port names match its COMP names).
+
+  ## Config sequence (8 MHz crystal, 500 kbps — DS20001801K §5)
+
+      step op      reg                 value
+      0    WRITE   CNF1  (0x2A)        0x00
+      1    WRITE   CNF2  (0x29)        0x90
+      2    WRITE   CNF3  (0x28)        0x02
+      3    WRITE   RXB0CTRL (0x60)     0x60   accept-all (RXM=11)
+      4    BITMOD  CANCTRL  (0x0F)     0x08 / mask 0x08   one-shot mode
+      5    WRITE   CANINTF  (0x2C)     0x00   clear flags
+      6    BITMOD  CANCTRL  (0x0F)     0x40 / mask 0xE0   REQOP = loopback
   """
 
   use Hw.Component
@@ -35,14 +46,14 @@ defmodule Mcp2515Bringup.Top do
 
   output :ftdi_rxd, 1
   output :led,      8
-  output :gn13,      1   # SCK
-  output :gp13,      1   # MOSI (SI)
-  input  :gn12,      1   # MISO (SO)
-  output :gp12,      1   # CS
+  output :gn13,     1   # SCK
+  output :gp13,     1   # MOSI (SI)
+  input  :gn12,     1   # MISO (SO)
+  output :gp12,     1   # CS
 
   # PLL / reset nets
   wire :pll_locked,  1
-  wire :clk_48,      1   # PLL output net (also declared as a clock above); the wire makes it internal, not a port
+  wire :clk_48,      1   # PLL output net (also declared as a clock above)
   wire :_clk_unused, 1
   wire :rst,         1
   wire :zero1,       1
@@ -59,9 +70,14 @@ defmodule Mcp2515Bringup.Top do
   wire :mcp_done,  1
   wire :mcp_rdata, 8
 
-  # Latched read result + status, and a shared delay counter
-  wire :canstat,  8, init: 0
-  wire :got_read, 1, init: 0
+  # Config-table decode (indexed by cfg_step) + latched read result + status
+  wire :cfg_step,  3, init: 0
+  wire :cfg_op,    2
+  wire :cfg_addr,  8
+  wire :cfg_wdata, 8
+  wire :cfg_mask,  8
+  wire :canstat,   8, init: 0
+  wire :got_read,  1, init: 0
   wire :wait_cnt, 24, init: 0
 
   # CANSTAT mode bits broken out for the serial reporter
@@ -75,6 +91,41 @@ defmodule Mcp2515Bringup.Top do
     cs7   = canstat[7..7]
     cs6   = canstat[6..6]
     cs5   = canstat[5..5]
+
+    # Config ROM: cfg_step -> {op, addr, wdata, mask}. op 1 = WRITE, 3 = BITMOD.
+    hdl_case <<cfg_step::3>> do
+      <<4::3>> -> cfg_op = 3
+      <<6::3>> -> cfg_op = 3
+      <<_::3>> -> cfg_op = 1
+    end
+
+    hdl_case <<cfg_step::3>> do
+      <<0::3>> -> cfg_addr = 0x2A
+      <<1::3>> -> cfg_addr = 0x29
+      <<2::3>> -> cfg_addr = 0x28
+      <<3::3>> -> cfg_addr = 0x60
+      <<4::3>> -> cfg_addr = 0x0F
+      <<5::3>> -> cfg_addr = 0x2C
+      <<6::3>> -> cfg_addr = 0x0F
+      <<_::3>> -> cfg_addr = 0x00
+    end
+
+    hdl_case <<cfg_step::3>> do
+      <<0::3>> -> cfg_wdata = 0x00
+      <<1::3>> -> cfg_wdata = 0x90
+      <<2::3>> -> cfg_wdata = 0x02
+      <<3::3>> -> cfg_wdata = 0x60
+      <<4::3>> -> cfg_wdata = 0x08
+      <<5::3>> -> cfg_wdata = 0x00
+      <<6::3>> -> cfg_wdata = 0x40
+      <<_::3>> -> cfg_wdata = 0x00
+    end
+
+    hdl_case <<cfg_step::3>> do
+      <<4::3>> -> cfg_mask = 0x08
+      <<6::3>> -> cfg_mask = 0xE0
+      <<_::3>> -> cfg_mask = 0x00
+    end
   end
 
   instance :pll, ULX3S.PLL,
@@ -89,7 +140,6 @@ defmodule Mcp2515Bringup.Top do
     phase_dir: 0,
     phase_step: 0
 
-  # Power-on reset generator (USB re-enum inputs tied off — we only want rst).
   instance :reset_gen, Hw.ReEnum,
     HOLD_CYCLES:  2_400_000,
     clk:          :clk_48,
@@ -130,10 +180,9 @@ defmodule Mcp2515Bringup.Top do
     b5:  :pll_locked,
     txd: :ftdi_rxd
 
-  # Controller: settle -> RESET the MCP2515 -> settle -> loop reading CANSTAT.
-  # Each command uses a hold-until-busy handshake: assert start until the engine
-  # drops ready (accepted), then wait for done. start defaults to 0 elsewhere so
-  # the engine never re-triggers on a completed transaction.
+  # Controller: settle -> RESET -> settle -> walk config table -> loop reading
+  # CANSTAT. Each MCP op uses a hold-until-busy handshake: assert start until the
+  # engine drops ready (accepted), then wait for done.
   fsm :ctrl, clock: :clk_48, reset: :rst, init: :settle do
     defaults do
       mcp_start = 0
@@ -157,8 +206,33 @@ defmodule Mcp2515Bringup.Top do
 
       :post_reset ->
         wait_cnt = wait_cnt + 1
-        on wait_cnt == 2_400_000, next: :issue_read
+        on wait_cnt == 2_400_000 do
+          cfg_step = 0
+          next :issue_cfg
+        end
 
+      # Walk the config table: issue reg[cfg_step], advance until step 6 done.
+      :issue_cfg ->
+        mcp_op    = cfg_op
+        mcp_addr  = cfg_addr
+        mcp_wdata = cfg_wdata
+        mcp_mask  = cfg_mask
+        mcp_start = 1
+        on mcp_ready == 0, next: :wait_cfg
+
+      :wait_cfg ->
+        on mcp_done do
+          on cfg_step == 6 do
+            wait_cnt = 0
+            next :issue_read
+          end
+          on :else do
+            cfg_step = cfg_step + 1
+            next :issue_cfg
+          end
+        end
+
+      # Poll CANSTAT forever — should read 0x40 (loopback) after configure.
       :issue_read ->
         mcp_op   = 2
         mcp_addr = 0x0E
