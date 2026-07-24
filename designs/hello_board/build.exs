@@ -37,8 +37,16 @@ defmodule HelloBoard.Build do
     #   EHDL_OPT=cse,mux_flatten -> optimize: true, only: [:cse, :mux_flatten]
     opt_opts = build_opt_opts(System.get_env("EHDL_OPT"))
 
-    IO.puts("==> Elaborating and emitting Verilog#{if opt_opts != [], do: " (optimizer: #{inspect(opt_opts)})", else: ""}...")
-    Hw.to_file!(@modules, verilog_file, opt_opts)
+    # Keep-policy override, gated by the KEEP env var, for the keep-scope
+    # experiment (see KeepPolicy). Unset -> emit default (all three policies).
+    #   KEEP=cdc  -> [:clock_domain_preservation]
+    #   KEEP=none -> []
+    #   KEEP=a,b  -> [:a, :b]
+    keep_opts = build_keep_opts(System.get_env("KEEP"))
+    all_opts = opt_opts ++ keep_opts
+
+    IO.puts("==> Elaborating and emitting Verilog#{if all_opts != [], do: " (opts: #{inspect(all_opts)})", else: ""}...")
+    Hw.to_file!(@modules, verilog_file, all_opts)
     IO.puts("    #{verilog_file}")
 
     IO.puts("==> Synthesizing with Yosys...")
@@ -100,6 +108,15 @@ defmodule HelloBoard.Build do
       IO.puts("==> Loading to SRAM with fujprog (volatile)...")
       cmd!("fujprog #{bit_file}")
     end
+  end
+
+  # Translate KEEP into keep_policies opts. Unset -> [] (emit uses its default).
+  defp build_keep_opts(nil), do: []
+  defp build_keep_opts(""), do: []
+  defp build_keep_opts("none"), do: [keep_policies: []]
+  defp build_keep_opts("cdc"), do: [keep_policies: [:clock_domain_preservation]]
+  defp build_keep_opts(spec) do
+    [keep_policies: spec |> String.split(",", trim: true) |> Enum.map(&String.to_atom/1)]
   end
 
   # Translate EHDL_OPT into Hw.Optimize opts. nil/"" -> [] (optimizer off).

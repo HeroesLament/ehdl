@@ -28,7 +28,20 @@ defmodule Hw.Emit.Verilog do
       |> Design.finalize()
       |> maybe_optimize(opts)
 
-    policies = Keyword.get(opts, :keep_policies, [:blackbox_fanout, :clock_domain_preservation, :output_reachability])
+    # Default keep policy: clock_domain_preservation only.
+    #
+    # output_reachability and blackbox_fanout are intentionally excluded from the
+    # default. Both are redundant with correct synthesis: yosys never prunes
+    # logic that drives a primary output, nor logic driven by an opaque blackbox
+    # output it can't see inside. Their only effect is to `(* keep *)` those nets,
+    # which BLOCKS yosys from optimizing them. Worse, both expand into ~the whole
+    # design here (output_reachability pins the fanin cone of the debug dashboard;
+    # blackbox_fanout can't tell the PLL's input connections from its outputs and
+    # forward-expands from tie-off constants like diag_zero and the clock nets).
+    # Measured cost: ~5.5k LUT4 vs ~1.8k with them off, and the device enumerates
+    # identically either way (silicon-gated). Both remain available via
+    # opts[:keep_policies] for designs that genuinely need them.
+    policies = Keyword.get(opts, :keep_policies, [:clock_domain_preservation])
     kept = Hw.Compile.KeepPolicy.compute(design, policies: policies)
 
     [

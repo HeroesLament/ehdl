@@ -15,8 +15,11 @@ defmodule Hw.Compile.KeepPolicy do
   - `:clock_domain_preservation` — if any register in a clock domain is kept,
     keep all registers in that domain. Prevents partial pruning of state machines.
 
-  - `:blackbox_fanout` — keep all logic fed by any blackbox output (PLL, DCCA etc.)
-    since synthesis cannot see inside blackboxes to prove liveness.
+  - `:blackbox_fanout` — keep logic fed by any blackbox *data* output (e.g. a
+    PLL lock signal) since synthesis cannot see inside blackboxes to prove
+    liveness. Clock outputs are excluded: a clock's fanout is every register in
+    its domain, so seeding the expansion from a clock would pin the entire
+    clocked design and forbid yosys from optimizing ~all of it.
 
   - `:cyclic_state_preservation` — detect strongly connected components (SCCs) in the
     op dataflow graph. Any SCC containing at least one `Reg` is definitionally a state
@@ -75,11 +78,18 @@ defmodule Hw.Compile.KeepPolicy do
         _, set -> set
       end)
 
-    # Also keep clock signals — they're always driven by PLL/DCCA blackboxes
+    # Exclude clock nets from the seeds. A clock's fanout is every register in
+    # its domain (and everything downstream of them), so forward-expanding from
+    # a clock pins essentially the whole design and forbids yosys from
+    # optimizing it — measured at ~3,700 LUT4 of pure over-reach on hello_board.
+    # The PLL's CLKOP is both a blackbox output AND a declared clock, so we
+    # subtract the clock set; what remains is genuine data outputs (e.g. the
+    # PLL lock signal), whose fanout is the small reset/status logic we do want
+    # to protect from liveness-blind pruning.
     clock_names = MapSet.new(design.clocks, & &1.name)
-    seeds = MapSet.union(blackbox_outputs, clock_names)
+    seeds = MapSet.difference(blackbox_outputs, clock_names)
 
-    # Transitively expand: keep anything driven by a kept signal
+    # Transitively expand: keep anything driven by a kept (non-clock) signal.
     transitively_expand(seeds, design.ops, acc)
   end
 
