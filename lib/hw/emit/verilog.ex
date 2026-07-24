@@ -23,7 +23,11 @@ defmodule Hw.Emit.Verilog do
   Emit a design as Verilog text.
   """
   def emit(%Design{} = design, opts \\ []) do
-    design = Design.finalize(design)
+    design =
+      design
+      |> Design.finalize()
+      |> maybe_optimize(opts)
+
     policies = Keyword.get(opts, :keep_policies, [:blackbox_fanout, :clock_domain_preservation, :output_reachability])
     kept = Hw.Compile.KeepPolicy.compute(design, policies: policies)
 
@@ -48,6 +52,13 @@ defmodule Hw.Emit.Verilog do
     |> List.flatten()
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
+  end
+
+  # Run the IR optimizer between finalize and emission. Inert unless
+  # `opts[:optimize]` is truthy (Hw.Optimize.run/2 short-circuits), so the
+  # default emit path is byte-for-byte unchanged. See `Hw.Optimize`.
+  defp maybe_optimize(%Design{} = design, opts) do
+    Hw.Optimize.run(design, opts)
   end
 
   # --- Module Header ---

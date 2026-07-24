@@ -30,8 +30,15 @@ defmodule HelloBoard.Build do
     config_file  = Path.join(@build_dir, "#{@top_name}.config")
     bit_file     = Path.join(@build_dir, "#{@top_name}.bit")
 
-    IO.puts("==> Elaborating and emitting Verilog...")
-    Hw.to_file!(@modules, verilog_file)
+    # IR optimizer opts, gated by the EHDL_OPT env var so the same build script
+    # serves both the baseline (unset) and the optimizer silicon experiments:
+    #   EHDL_OPT=cse   -> optimize: true, only: [:cse]
+    #   EHDL_OPT=all   -> optimize: true   (full default pass stack)
+    #   EHDL_OPT=cse,mux_flatten -> optimize: true, only: [:cse, :mux_flatten]
+    opt_opts = build_opt_opts(System.get_env("EHDL_OPT"))
+
+    IO.puts("==> Elaborating and emitting Verilog#{if opt_opts != [], do: " (optimizer: #{inspect(opt_opts)})", else: ""}...")
+    Hw.to_file!(@modules, verilog_file, opt_opts)
     IO.puts("    #{verilog_file}")
 
     IO.puts("==> Synthesizing with Yosys...")
@@ -93,6 +100,15 @@ defmodule HelloBoard.Build do
       IO.puts("==> Loading to SRAM with fujprog (volatile)...")
       cmd!("fujprog #{bit_file}")
     end
+  end
+
+  # Translate EHDL_OPT into Hw.Optimize opts. nil/"" -> [] (optimizer off).
+  defp build_opt_opts(nil), do: []
+  defp build_opt_opts(""), do: []
+  defp build_opt_opts("all"), do: [optimize: true]
+  defp build_opt_opts(spec) do
+    passes = spec |> String.split(",", trim: true) |> Enum.map(&String.to_atom/1)
+    [optimize: true, only: passes]
   end
 
   defp cmd!(command) do
