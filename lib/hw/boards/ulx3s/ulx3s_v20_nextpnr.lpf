@@ -223,8 +223,13 @@ IOBUF  PORT "usb_fpga_dp" PULLMODE=NONE IO_TYPE=LVCMOS33D DRIVE=16;
 IOBUF  PORT "usb_fpga_dn" PULLMODE=NONE IO_TYPE=LVCMOS33D DRIVE=16;
 LOCATE COMP "usb_fpga_bd_dp" SITE "D15"; # single-ended bidirectional
 LOCATE COMP "usb_fpga_bd_dn" SITE "E15";
-IOBUF  PORT "usb_fpga_bd_dp" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
-IOBUF  PORT "usb_fpga_bd_dn" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+# USB FS TX pads: DRIVE=12 + SLEWRATE=FAST. Reliability sweep (5 forced re-enums
+# per config) proved this is the ONLY reliable setting: DRIVE=12/FAST reaches USB
+# Address state 5/5, while DRIVE=16/FAST reaches it 0/5 (16 mA overdrives the line
+# through the US2 series R -> overshoot/ringing corrupts host sampling; 12 mA is
+# better matched to the ~28-44 ohm USB source impedance). SLOW fails at every drive.
+IOBUF  PORT "usb_fpga_bd_dp" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=12 SLEWRATE=FAST;
+IOBUF  PORT "usb_fpga_bd_dn" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=12 SLEWRATE=FAST;
 LOCATE COMP "usb_fpga_pu_dp" SITE "B12"; # pull up/down control
 LOCATE COMP "usb_fpga_pu_dn" SITE "C12";
 IOBUF  PORT "usb_fpga_pu_dp" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=16;

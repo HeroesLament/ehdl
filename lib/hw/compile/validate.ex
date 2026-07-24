@@ -131,6 +131,25 @@ defmodule Hw.Compile.Validate do
     ["clock `#{name}` is used but was never declared"]
   end
 
+  defp error_notes(%Error{message: "Multiple drivers for signal", details: %{signal: name, count: n, drivers: drivers}}) do
+    kinds = drivers |> Enum.map(&driver_kind/1) |> Enum.uniq()
+    base = ["signal `#{name}` is driven by #{n} sources — only one driver allowed"]
+    kind_notes = Enum.map(kinds, fn k -> "  • #{k}" end)
+
+    # A register + a bare combinational Assign on the SAME signal is the exact
+    # signature of the instance-port namespace collision: a top-level wire shares
+    # its name with a connected child instance's input port, so binding aliased
+    # the name and a `comb do` assignment silently retargeted onto this signal.
+    collision_note =
+      if kind_has?(drivers, Reg) and kind_has?(drivers, Assign) do
+        ["this is often a NAME COLLISION: `#{name}` matches a child instance's port name,",
+         "so an instance connection and a local assignment ended up on the same signal"]
+      else
+        []
+      end
+
+    base ++ kind_notes ++ collision_note
+  end
   defp error_notes(%Error{message: "Multiple drivers for signal", details: %{signal: name, count: n}}) do
     ["signal `#{name}` is driven by #{n} sources — only one driver allowed"]
   end
@@ -163,6 +182,14 @@ defmodule Hw.Compile.Validate do
     "use `zero_extend/2` or a bit slice `signal[n..0]` to align widths"
   end
 
+  defp error_hint(%Error{message: "Multiple drivers" <> _, details: %{signal: name, drivers: drivers}}) do
+    if kind_has?(drivers, Reg) and kind_has?(drivers, Assign) do
+      "rename `#{name}` (or the colliding instance port) so a top-level wire and a " <>
+      "connected child-instance port don't share a name; then assign it in exactly one block"
+    else
+      "ensure `#{name}` is assigned in only one `comb do` or `on :clk do` block"
+    end
+  end
   defp error_hint(%Error{message: "Multiple drivers" <> _, details: %{signal: name}}) do
     "ensure `#{name}` is assigned in only one `comb do` or `on :clk do` block"
   end
@@ -356,21 +383,37 @@ defmodule Hw.Compile.Validate do
   # ── Single Driver Check ────────────────────────────────────────────────────
 
   defp check_single_driver(errors, %Design{ops: ops}) do
+    # Group ops by the signal each one drives, keeping the op (not just its
+    # output) so a multiple-driver error can name WHAT each driver is.
     drivers =
       ops
-      |> Enum.map(&get_output/1)
-      |> Enum.reject(&is_nil/1)
-      |> Enum.group_by(& &1.name)
+      |> Enum.flat_map(fn op ->
+        case get_output(op) do
+          nil -> []
+          out -> [{out.name, op}]
+        end
+      end)
+      |> Enum.group_by(fn {name, _op} -> name end, fn {_name, op} -> op end)
 
     Enum.reduce(drivers, errors, fn
       {_name, [_single]}, acc -> acc
       {name, multiple},   acc ->
         [%Error{
           message: "Multiple drivers for signal",
-          details: %{signal: name, count: length(multiple)}
+          details: %{signal: name, count: length(multiple), drivers: multiple}
         } | acc]
     end)
   end
+
+  # Human label for the kind of driver an op represents, used in E020 notes.
+  defp driver_kind(%Reg{}),    do: "a clocked register (`on :clk do`)"
+  defp driver_kind(%Mux{}),    do: "a conditional/case assignment"
+  defp driver_kind(%Assign{}), do: "a combinational assignment (`comb do`)"
+  defp driver_kind(%Add{}),    do: "an arithmetic expression"
+  defp driver_kind(%Sub{}),    do: "an arithmetic expression"
+  defp driver_kind(op),        do: "a #{op.__struct__ |> Module.split() |> List.last()} op"
+
+  defp kind_has?(drivers, mod), do: Enum.any?(drivers, &(&1.__struct__ == mod))
 
   defp get_output(%Reg{output: out}),    do: out
   defp get_output(%Add{output: out}),    do: out

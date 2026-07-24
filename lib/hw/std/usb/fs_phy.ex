@@ -67,14 +67,24 @@ defmodule Hw.USB.FSPhy do
   input  :tx_se0,    1
   output :tx_ready,  1
   output :tx_active, 1
+  # Debug: a 1-cycle strobe at the MIDDLE of each transmitted bit (phase==2 while
+  # transmitting). At this phase the registered tx_dp/tx_dn hold the CURRENT bit's
+  # settled symbol, so a top-level capture buffer can sample one symbol per bit.
+  output :dbg_tx_midbit, 1
 
   # ---------------------------------------------------------------------------
   # Two-flop synchronizer
   # ---------------------------------------------------------------------------
   wire :dp_s0, 1, init: 1
   wire :dp_s1, 1, init: 1
+  wire :dp_s2, 1, init: 1
+  wire :dp_s3, 1, init: 1
   wire :dn_s0, 1, init: 0
   wire :dn_s1, 1, init: 0
+  wire :dn_s2, 1, init: 0
+  wire :dn_s3, 1, init: 0
+  wire :dp_sync, 1   # synchronizer output tapped at the swept depth (SYNCDEPTH)
+  wire :dn_sync, 1
 
   # ---------------------------------------------------------------------------
   # Glitch filter — update only when two consecutive sync'd samples agree
@@ -323,6 +333,13 @@ defmodule Hw.USB.FSPhy do
   # ---------------------------------------------------------------------------
 
   comb do
+    # RX synchronizer DEPTH sweep (prior art: Fomu/ValentyUSB traced intermittent,
+    # per-build enumeration failure to metastability in the bus synchronizer). Tap
+    # the flop chain at the swept depth: dp_s1 = 2 flops (baseline), dp_s2 = 3,
+    # dp_s3 = 4. Deeper => exponentially lower metastability rate, +1 cyc latency each.
+    dp_sync = dp_s1   # SYNCDEPTH
+    dn_sync = dn_s1   # SYNCDEPTH
+
     # Symbol decode from filtered signals
     sym_se0 = dp_f == 0 and dn_f == 0
     sym_k   = dp_f == 0 and dn_f == 1
@@ -331,7 +348,10 @@ defmodule Hw.USB.FSPhy do
     # Clock recovery
     bit_edge        = dp_prev != dp_f
     sample_cnt_next = sample_cnt + 1
-    sample_en       = (sample_cnt == 0)
+    # Sample phase within the 4x oversample window. (A ValentyUSB-style port to
+    # mid-bit + continuous re-centering was tried and reproducibly BROKE control-IN
+    # completion at every phase, so reverted to the original phase-0 sampling.)
+    sample_en       = (sample_cnt == 0)   # SAMPLEPHASE
 
     # NRZI decode
     bit_transition = bxor(rxd_last_j, sym_j)
@@ -353,6 +373,8 @@ defmodule Hw.USB.FSPhy do
     dp_tx     = tx_dp
     dn_tx     = tx_dn
     tx_ready  = tx_act and tx_bit_en and tx_state == 1
+    # Mid-bit sample strobe (see output decl): current bit's symbol is settled.
+    dbg_tx_midbit = (phase == 2) and tx_act
 
     # RX outputs — state encoding: idle=0 detect=1 sync_k=2 sync_j=3 active=4 eop0=5 eop1=6
     rx_active = (rx_state == 4)
@@ -390,15 +412,19 @@ defmodule Hw.USB.FSPhy do
   # ---------------------------------------------------------------------------
 
   on :clk_48mhz do
-    # Stage 1: Two-flop synchronizer
+    # Stage 1: synchronizer flop chain (tapped at SYNCDEPTH via dp_sync/dn_sync)
     dp_s0 = dp_diff
     dp_s1 = dp_s0
+    dp_s2 = dp_s1
+    dp_s3 = dp_s2
     dn_s0 = dn_raw
     dn_s1 = dn_s0
+    dn_s2 = dn_s1
+    dn_s3 = dn_s2
 
     # Stage 2: Majority-vote glitch filter
     dp_p1 = dp_p0
-    dp_p0 = dp_s1
+    dp_p0 = dp_sync
     if dp_p0 == 1 and dp_p1 == 1 do
       dp_f = 1
     end
@@ -407,7 +433,7 @@ defmodule Hw.USB.FSPhy do
     end
 
     dn_p1 = dn_p0
-    dn_p0 = dn_s1
+    dn_p0 = dn_sync
     if dn_p0 == 1 and dn_p1 == 1 do
       dn_f = 1
     end
@@ -418,7 +444,9 @@ defmodule Hw.USB.FSPhy do
     # TX phase clock — always runs
     phase = phase_next
 
-    # Clock recovery — only during RX (not during TX)
+    # Clock recovery — only during RX (not during TX). Re-center the sample counter
+    # on a bit edge, but ONLY outside active data (rx_state < 4): continuous
+    # re-centering (the ValentyUSB pattern) was tried and broke completion here.
     dp_prev = dp_f
     if bnot(tx_act) do
       if bit_edge and sample_cnt != 0 and rx_state < 4 do

@@ -23,6 +23,8 @@ defmodule Hw.Compile.Elaborate.Sequential do
   is guaranteed by the mask/value equality logic).
   """
 
+  import Bitwise
+
   alias Hw.IR.Design
   alias Hw.IR.Types.{Signal, Const}
   alias Hw.IR.Ops
@@ -170,6 +172,18 @@ defmodule Hw.Compile.Elaborate.Sequential do
           end
 
         %{type: :case, expr: case_expr, clauses: clauses} ->
+          # STRUCTURAL INTEGRITY: reject duplicate exact-match selector arms.
+          # Case arms lower to a last-wins if-chain (see build_case_mux). Two
+          # fully-literal patterns that select the SAME subject value (e.g.
+          # `<<5::8>>` twice in a char_at/ROM template, or two dashboard columns
+          # emitted under one index) are not both reachable: the later arm
+          # silently shadows the earlier, so the earlier body is dead code. Same
+          # silent-wrong-hardware class as the wildcard-clobber (legal Verilog,
+          # wrong behaviour) — refuse it at elaboration instead of shipping it to
+          # silicon. Wildcard/capture catch-alls are handled separately below;
+          # only exact-literal collisions error here.
+          check_duplicate_literal_arms!(clauses)
+
           {case_val, d2} = Expr.build_expr(case_expr, signal_map, instance_map, memory_map, d)
           # Materialize before branching into clauses. Skip in comb mode.
           {mat_val, d3} = if comb, do: {nil, d2}, else: materialize(current_value, d2, signal_map, target_name)
@@ -189,7 +203,36 @@ defmodule Hw.Compile.Elaborate.Sequential do
               :default ->
                 {arms, body_value, body_d}
 
+              # An all-wildcard/capture binary pattern (`<<_::8, _::8>>`,
+              # `<<x::8, _::8>>`, `<<_::16>>`) matches EVERY subject — it IS the
+              # default clause. Route it to `default_val`, NOT to a regular arm.
+              #
+              # If it were built as an ordinary arm its match signal is a constant
+              # 1 (see build_binary_match), and because case arms lower to a
+              # last-wins if-chain, a trailing always-true arm CLOBBERS every
+              # specific arm above it back to the hold value. That silently pinned
+              # the whole USB CDC dispatch (ep0_state/ep_in_loaded/dev_state) —
+              # proven on silicon. A catch-all is a default, so treat it as one.
+              {:binary_pattern, segments, _total_width} when default_val == nil ->
+                if all_wildcard_pattern?(segments) do
+                  {arms, body_value, body_d}
+                else
+                  {match_sig, match_d} = build_binary_match(case_val, segments, _total_width, body_d)
+                  {arms ++ [{match_sig, body_value}], default_val, match_d}
+                end
+
               {:binary_pattern, segments, total_width} ->
+                # A default already exists; a further all-wildcard arm would be
+                # unreachable AND clobbering — refuse it loudly rather than emit
+                # silently-wrong hardware.
+                if all_wildcard_pattern?(segments) do
+                  raise Hw.Compile.Elaborate.ElabError,
+                    message: "hdl_case has more than one catch-all/wildcard arm " <>
+                             "(a second `<<_::N>>`-style pattern). A catch-all is " <>
+                             "the default clause; there can be only one. Remove the " <>
+                             "extra wildcard arm.",
+                    context: segments
+                end
                 {match_sig, match_d} = build_binary_match(case_val, segments, total_width, body_d)
                 {arms ++ [{match_sig, body_value}], default_val, match_d}
 
@@ -218,6 +261,82 @@ defmodule Hw.Compile.Elaborate.Sequential do
   end
 
   # --- Binary Pattern Matching ---
+
+  # True when a binary-pattern clause has NO literal segments — i.e. every segment
+  # is a wildcard (`_::N`) or a capture (`name::N`). Such a pattern matches every
+  # possible subject, so it is a catch-all / default clause, not a conditional arm.
+  # (`build_binary_match` would otherwise turn it into an always-true match signal,
+  # which clobbers sibling arms under last-wins lowering.)
+  defp all_wildcard_pattern?(segments) do
+    Enum.all?(segments, fn seg -> Map.get(seg, :type) != :literal end)
+  end
+
+  # STRUCTURAL INTEGRITY CHECK — duplicate exact-match selector arms.
+  #
+  # An arm whose binary pattern is entirely literal segments (no wildcard, no
+  # capture) matches exactly ONE subject value. Two such arms with the same value
+  # cannot both be live: case arms lower to a last-wins if-chain, so the second
+  # occurrence unconditionally shadows the first. The author almost certainly
+  # meant two distinct selectors (a mistyped ROM index, a copy-pasted dashboard
+  # column) — shipping it emits legal Verilog that silently drops the first arm's
+  # body. Raise instead.
+  #
+  # Only exact-literal patterns are checked. Wildcard/capture arms are catch-alls
+  # (handled by all_wildcard_pattern?/the default routing) and partially-literal
+  # patterns (`<<0x80::8, _::8>>`) match ranges, whose overlap is a legitimate
+  # priority-ordering choice, not a guaranteed dead arm.
+  defp check_duplicate_literal_arms!(clauses) do
+    Enum.reduce(clauses, %{}, fn clause, seen ->
+      case clause do
+        %{pattern: {:binary_pattern, segments, total_width}} ->
+          case literal_match_value(segments, total_width) do
+            {:ok, value} ->
+              case Map.get(seen, value) do
+                nil ->
+                  Map.put(seen, value, true)
+
+                _dup ->
+                  raise Hw.Compile.Elaborate.ElabError,
+                    message:
+                      "hdl_case has two arms that both match the exact value " <>
+                      "#{value} (0x#{Integer.to_string(value, 16)}). Case arms are " <>
+                      "priority-ordered last-wins, so the second arm silently " <>
+                      "shadows the first and the first arm's body becomes dead " <>
+                      "code. This is the duplicate-index / duplicate-label failure " <>
+                      "mode (e.g. a char_at ROM template or telemetry frame that " <>
+                      "emits two fields under one index). Give each selector a " <>
+                      "distinct value, or fold the two bodies into one arm.",
+                    context: segments
+              end
+
+            :not_exact ->
+              seen
+          end
+
+        _ ->
+          seen
+      end
+    end)
+
+    :ok
+  end
+
+  # If every segment of a binary pattern is a literal, fold them (MSB-first) into
+  # the single concrete subject value the pattern matches. Returns {:ok, value}
+  # for an exact selector, or :not_exact if any segment is wildcard/capture/:rest.
+  defp literal_match_value(segments, _total_width) do
+    Enum.reduce_while(segments, {:ok, 0}, fn seg, {:ok, acc} ->
+      case seg do
+        %{type: :literal, value: v, width: w} when is_integer(w) ->
+          {:cont, {:ok, Bitwise.bsl(acc, w) + (v &&& mask(w))}}
+
+        _ ->
+          {:halt, :not_exact}
+      end
+    end)
+  end
+
+  defp mask(w), do: Bitwise.bsl(1, w) - 1
 
   # Resolve :__subject__ placeholder in capture slice expressions with actual subject signal
   defp resolve_captures(body, subject_signal) do
@@ -335,15 +454,16 @@ defmodule Hw.Compile.Elaborate.Sequential do
     {then_val, else_val} = Expr.match_const_widths(then_value, else_value)
 
     result_name = :"_mux_#{:erlang.unique_integer([:positive])}"
-    width = Expr.infer_width(then_val, else_val)
-    signed = Expr.infer_signedness(then_val, else_val)
+    # Max-width across both arms (see infer_result_width_signed) so neither arm
+    # is silently truncated; narrower arm zero-extended via extend_arm.
+    {width, signed} = infer_result_width_signed([then_val, else_val])
 
     result_sig = %Signal{name: result_name, width: width, signed: signed, direction: :internal}
 
-    then_val = Expr.match_value_to_output(then_val, result_sig)
-    else_val = Expr.match_value_to_output(else_val, result_sig)
+    {then_val, d0}  = extend_arm(then_val, width, signed, design)
+    {else_val, d0b} = extend_arm(else_val, width, signed, d0)
 
-    d1 = Design.add_signal(design, result_sig)
+    d1 = Design.add_signal(d0b, result_sig)
 
     mux_op = %Ops.Mux{
       output: result_sig,
@@ -356,15 +476,48 @@ defmodule Hw.Compile.Elaborate.Sequential do
   end
 
   defp infer_result_width_signed(vals) do
-    # Prefer Signal width/signedness over Const — Signals have declared widths
-    Enum.find_value(vals, fn
-      %Signal{width: w, signed: s} -> {w, s}
-      _ -> nil
-    end) || case hd(vals) do
-      %Signal{width: w, signed: s} -> {w, s}
-      %Const{width: w, signed: s}  -> {w, s}
-    end
+    # A mux/case output must be wide enough for its WIDEST arm — otherwise a
+    # narrow-arm-first ordering (or a value arm narrower than a label arm, e.g.
+    # `0x30 + state` (6-bit) alongside `0x50` (8-bit)) truncated the wide arms
+    # and emitted legal-but-wrong Verilog. Take the max width across all arms;
+    # narrower arms are zero-extended to it in build_case_mux/build_mux_op.
+    widths = Enum.map(vals, fn
+      %Signal{width: w} -> w
+      %Const{width: w}  -> w
+      _                 -> 1
+    end)
+    width = Enum.max(widths)
+
+    # Signed only if EVERY sized arm is signed (mixing is caught elsewhere); a
+    # single unsigned arm makes the result unsigned, matching Verilog.
+    signed =
+      if Enum.all?(vals, fn
+           %Signal{signed: :signed} -> true
+           %Const{signed: :signed}  -> true
+           _                        -> false
+         end),
+         do: :signed,
+         else: :unsigned
+
+    {width, signed}
   end
+
+  # Zero-extend an arm value to the mux result width. Const arms just get their
+  # width field bumped (the emitter sizes the literal); Signal arms narrower than
+  # the target get an explicit ZeroExtend op so every arm feeding the Mux has the
+  # SAME width — the invariant the validator enforces. Emits dialect-neutral
+  # `{{N{1'b0}}, sig}` concat, legal under both gcc- and MSVC-style Verilog.
+  defp extend_arm(%Const{} = c, width, signed, design) do
+    {%Const{c | width: width, signed: signed}, design}
+  end
+  defp extend_arm(%Signal{width: w} = s, width, _signed, design) when w < width do
+    name = :"_zext_arm_#{:erlang.unique_integer([:positive])}"
+    sig = %Signal{name: name, width: width, signed: :unsigned, direction: :internal}
+    d1 = Design.add_signal(design, sig)
+    d2 = Design.add_op(d1, %Ops.ZeroExtend{output: sig, input: s, width: width})
+    {sig, d2}
+  end
+  defp extend_arm(val, _width, _signed, design), do: {val, design}
 
   defp build_case_mux(case_expr, case_arms, default_val, design) do
     all_vals = Enum.map(case_arms, &elem(&1, 1)) ++ [default_val]
@@ -392,12 +545,12 @@ defmodule Hw.Compile.Elaborate.Sequential do
       end
 
       {cond_sig_val, updated_d} = cond_sig
-      matched_value = Expr.match_value_to_output(value, result_sig)
-      {acc_cases ++ [{cond_sig_val, matched_value}], updated_d}
+      {matched_value, updated_d2} = extend_arm(value, width, signed, updated_d)
+      {acc_cases ++ [{cond_sig_val, matched_value}], updated_d2}
     end)
 
-    d2 = Design.add_signal(d1, result_sig)
-    matched_default = Expr.match_value_to_output(default_val, result_sig)
+    {matched_default, d1b} = extend_arm(default_val, width, signed, d1)
+    d2 = Design.add_signal(d1b, result_sig)
 
     mux_op = %Ops.Mux{
       output: result_sig,

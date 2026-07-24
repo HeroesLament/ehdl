@@ -150,9 +150,18 @@ defmodule Hw.Emit.Verilog do
     internals = Design.internals(design)
     clock_names = MapSet.new(design.clocks, & &1.name)
 
-    # Signals driven by Reg ops must be declared as `reg` not `wire`
-    reg_driven = design.ops
-      |> Enum.filter(&match?(%Reg{}, &1))
+    # Signals driven by Reg ops must be declared as `reg` not `wire`.
+    # A synchronous MemRead (clock != nil) is also procedurally assigned with
+    # `<=` inside a clocked always block (see Sequential.emit_memory_logic), so
+    # its output signal must be `reg` too — declaring it `wire` is illegal
+    # Verilog (procedural assignment to a net) even if some tools tolerate it.
+    reg_driven =
+      design.ops
+      |> Enum.filter(fn
+        %Reg{} -> true
+        %MemRead{clock: clk} -> clk != nil
+        _ -> false
+      end)
       |> MapSet.new(& &1.output.name)
 
     case internals do
@@ -180,9 +189,23 @@ defmodule Hw.Emit.Verilog do
       [] -> []
       _ ->
         decls = ["  // Memory declarations" |
-          Enum.map(mems, fn %Mem{name: name, width: width, depth: depth} ->
+          Enum.map(mems, fn %Mem{name: name, width: width, depth: depth, sync_read: sync_read} ->
             addr_bits = max(1, ceil(:math.log2(depth)) |> trunc())
-            "  reg [#{width - 1}:0] #{name} [0:#{depth - 1}];  // #{depth} x #{width}-bit, #{addr_bits}-bit addr"
+            # A registered-read memory (sync_read) is meant to map to a real
+            # block RAM (ECP5 DP16KD / iCE40 EBR), which is the only RAM style
+            # that loads its init from the bitstream. yosys will otherwise size
+            # a small memory into distributed LUT-RAM, which on ECP5 CANNOT be
+            # initialized -> it reads all zeros on silicon (the desc_rom bug).
+            # The `ram_style="block"` attribute forces block-RAM inference; it
+            # is a matched pair with the registered-read idiom emitted by
+            # Sequential.emit_memory_logic (both are required, neither alone
+            # suffices). yosys's memory_libmap/memory_bram passes honor it.
+            ram_style = if sync_read && sync_read != false do
+              ~s{  (* ram_style = "block" *)\n}
+            else
+              ""
+            end
+            "#{ram_style}  reg [#{width - 1}:0] #{name} [0:#{depth - 1}];  // #{depth} x #{width}-bit, #{addr_bits}-bit addr"
           end)
         ]
 

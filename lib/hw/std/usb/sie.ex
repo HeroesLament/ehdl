@@ -52,6 +52,11 @@ defmodule Hw.USB.SIE do
   output :tx_state_out,       3
   output :send_handshake_out, 1
   output :dbg_accept_out,     1   # pulses when a token passes CRC5+addr-match (TX-arm precondition)
+  output :dbg_txreq_out,      1   # sticky tx_req: an IN token armed a DATA transmit (not just a handshake)
+  output :dbg_rxaddr_out,     7   # address field of the last token the SIE decoded (what addr the host uses)
+  output :dbg_tokfail_out,    2   # last token-decode outcome: 0=accepted 1=crc5-fail 2=addr-mismatch
+  output :dbg_tokdone_out,    1   # 1-cycle strobe: a token completed decoding (token_bits==15)
+  output :dbg_in_ep0_out,     1   # 1-cycle strobe: an IN token to EP0 was accepted (status-IN request)
 
   # USBEndpointOut (SIE → CDC)
   output :ep_out_data,    8, init: 0
@@ -121,6 +126,8 @@ defmodule Hw.USB.SIE do
   # Blocker-1 accept-path probes
   wire :dbg_rxpid_at,   8, init: 0   # rx_pid value AT the token_bits==15 accept point
   wire :dbg_accept,     1, init: 0   # pulses 1 on the cycle a token is accepted
+  wire :dbg_tok_done,   1, init: 0   # 1-cycle strobe: a token finished decoding (token_bits==15)
+  wire :dbg_in_ep0,     1, init: 0   # 1-cycle strobe: accepted IN token addressed to EP0
   wire :dbg_setup_at,   1, init: 0   # token_is_setup_reg value set at accept
   wire :dbg_class_bits, 2, init: 0   # the {pid[1],pid[0]} type bits used for classification
   wire :dbg_last_state, 3, init: 0   # rx_state on the previous cycle (see transitions)
@@ -182,6 +189,8 @@ defmodule Hw.USB.SIE do
   wire :tx_ep_reg,       4, init: 0
   wire :tx_is_handshake, 1, init: 0
   wire :tx_crc16_reg,   16, init: 0xFFFF
+  wire :turn_wait,       6, init: 0   # turnaround delay counter (cycles since request armed)
+  wire :turn_go,         1            # comb: turn_wait has reached the swept delay -> may TX
 
   # ---------------------------------------------------------------------------
   # CRC wires
@@ -209,6 +218,11 @@ defmodule Hw.USB.SIE do
 
   comb do
     one             = 1
+    # TURNAROUND-DELAY sweep: the device must answer 2-6.5 bit-times (8-26 cyc)
+    # after the host token EOP; responding too early (host still in TX->RX
+    # turnaround) gets the response missed. turn_go gates TX start until turn_wait
+    # reaches the swept threshold. N=0 => fire immediately (old behaviour).
+    turn_go         = (turn_wait >= 0)   # TURNSWEEP
     bit_cnt_next    = bit_cnt + 1
     token_bits_next = token_bits + 1
     tx_bit_cnt_next = tx_bit_cnt + 1
@@ -223,7 +237,12 @@ defmodule Hw.USB.SIE do
     assembled_pid = {phy_rx_data, byte_shift[0..0], byte_shift[1..1], byte_shift[2..2], byte_shift[3..3], byte_shift[4..4], byte_shift[5..5], byte_shift[6..6]}
 
     tx_sending  = (tx_state != 0)
-    tx_cur_bit  = tx_shift[0..0]
+    # During :tx_crc (state index 4) the serial output must come from tx_crc_buf,
+    # not tx_shift. The old unconditional tx_shift[0] meant the CRC16 field was
+    # NEVER placed on the wire (netlist-proven: phy_tx_data = tx_shift[0] always,
+    # while :tx_crc only shifts tx_crc_buf) — every DATA packet went out with a
+    # corrupt/absent CRC, so the host rejected it and never ACKed our IN.
+    tx_cur_bit  = if tx_state == 4, do: tx_crc_buf[0..0], else: tx_shift[0..0]
 
     # Mux CRC16 register: TX path while sending, RX path otherwise
     crc16_reg    = if tx_sending, do: tx_crc16_reg, else: rx_crc16_reg
@@ -238,6 +257,11 @@ defmodule Hw.USB.SIE do
     tx_state_out       = tx_state
     send_handshake_out = send_handshake
     dbg_accept_out     = dbg_accept
+    dbg_txreq_out      = tx_req
+    dbg_rxaddr_out     = dbg_rxaddr_at
+    dbg_tokfail_out    = dbg_tok_fail
+    dbg_tokdone_out    = dbg_tok_done
+    dbg_in_ep0_out     = dbg_in_ep0
   end
 
   # ---------------------------------------------------------------------------
@@ -294,6 +318,8 @@ defmodule Hw.USB.SIE do
     defaults do
       ep_in_done     = 0
       ep_in_nak      = 0
+      dbg_tok_done   = 0   # default low; pulses 1 the cycle a token completes
+      dbg_in_ep0     = 0   # default low; pulses 1 when an IN token to EP0 is accepted
       ep_out_valid   = 0
       ep_out_pkt_end = 0   # default low; the pulse is emitted in the recv_data arm's
                            # on-phy_rx_se0 (where assignments commit), 1-cycle strobe.
@@ -323,15 +349,11 @@ defmodule Hw.USB.SIE do
         ep_in_done = 1
       end
 
-      # EOP: optionally ACK good OUT/SETUP, then reset RX
+      # EOP: reset RX. NOTE: the ACK-handshake arm is NOT here — plain register
+      # writes in this defaults-block on-phy_rx_se0 are dropped by the elaborator
+      # (only clear_rx/next commit). arm_handshake(0xD2) is done in the recv_data
+      # case arm's on-phy_rx_se0 instead (proven by the ACC1/HSK0 hardware read).
       on phy_rx_se0 do
-        if rx_state == 2 and token_addr_match_reg and
-           (token_is_out_reg or token_is_setup_reg) and
-           bxor(rx_crc16_reg[15..0], 0xB001) == 0 do
-          arm_handshake(0xD2)
-          # ep_out_pkt_end is emitted from the recv_data case arm's on-phy_rx_se0
-          # (assignments there commit; here in defaults they were dropped).
-        end
         clear_rx()
         next :idle
       end
@@ -438,6 +460,14 @@ defmodule Hw.USB.SIE do
             ep_out_pkt_end = 1
             ep_out_setup   = token_is_setup_reg
             ep_out_ep      = token_ep_reg
+            # Arm the ACK handshake HERE too, not in the defaults-block on-phy_rx_se0.
+            # HARDWARE-PROVEN (health dashboard: ACC1 but HSK0): plain register writes
+            # in the FIRST fsm block's `on phy_rx_se0` are DROPPED by the elaborator
+            # (only its `next`/`clear_rx` commit), so arm_handshake there never fired
+            # and the device never sent ACK — enumeration stalled at DEV0 forever.
+            # This recv_data case-arm's on-phy_rx_se0 assignments DO commit (same path
+            # that made ep_out_pkt_end work), so the handshake arms from here.
+            arm_handshake(0xD2)
           end
           next :idle
         end
@@ -476,6 +506,7 @@ defmodule Hw.USB.SIE do
 
           if token_bits == 15 do
             token_bits = 0
+            dbg_tok_done   = 1                  # strobe: a token finished decoding this cycle
             dbg_crc5_at    = crc5_next          # debug: crc5 residual at token complete
             dbg_rxaddr_at  = rx_addr            # debug: received address
             dbg_devaddr_at = dev_addr[6..0]     # debug: device address to match against
@@ -493,6 +524,7 @@ defmodule Hw.USB.SIE do
                 token_is_setup_reg   = (rx_pid == 0x2D)
 
                 if rx_pid == 0x69 do
+                  if rx_ep == 0 do dbg_in_ep0 = 1 end   # host issued a status/IN request to EP0
                   if (rx_ep == 0 and ep0_in_loaded) or
                      (rx_ep == 1 and ep1_in_loaded) do
                     arm_tx(rx_ep, if(rx_ep == 0, do: ep0_in_pid, else: ep1_in_pid))
@@ -534,14 +566,25 @@ defmodule Hw.USB.SIE do
     case tx_state do
 
       :idle ->
-        on tx_req do
+        # Turnaround delay: count up while a request is pending, only start driving
+        # once turn_go (turn_wait >= swept N). Reset the counter when idle with no
+        # request so each turnaround times fresh.
+        if (tx_req or send_handshake) and bnot(turn_go) do
+          turn_wait = turn_wait + 1
+        end
+        if bnot(tx_req or send_handshake) do
+          turn_wait = 0
+        end
+        on tx_req and turn_go do
           tx_data_ack     = 1
           tx_is_handshake = 0
+          turn_wait       = 0
           start_tx(tx_req_ep, tx_req_pid)
         end
-        on send_handshake and bnot(tx_req) do
+        on send_handshake and bnot(tx_req) and turn_go do
           tx_hs_ack       = 1
           tx_is_handshake = 1
+          turn_wait       = 0
           start_tx(0, handshake_pid)
         end
 
@@ -570,7 +613,15 @@ defmodule Hw.USB.SIE do
                 ep_in_ready = 1
                 next :tx_data
               else
-                next :tx_eop
+                # ZERO-LENGTH DATA packet (SET_ADDRESS status stage): a DATA1 with
+                # no payload STILL carries a CRC16 of the empty payload = 0x0000.
+                # The old `next :tx_eop` emitted SYNC|PID|EOP (runt, no CRC) -> host
+                # rejected it -> never ACKed -> status never completed (inep0>0,
+                # nak=0, indone=0). Route through :tx_crc so the 16 CRC bits (all
+                # zero) go out; shift direction is irrelevant for an all-zero CRC.
+                tx_crc_buf = 0x0000
+                tx_crc_cnt = 0
+                next :tx_crc
               end
             end
           end

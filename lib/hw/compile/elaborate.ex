@@ -549,8 +549,18 @@ defmodule Hw.Compile.Elaborate do
       {data_val, d3} = Expr.build_expr(value_expr, signal_map, instance_map, memory_map, d2)
       {enable_val, d4} = Expr.build_expr(enable_expr, signal_map, instance_map, memory_map, d3)
 
+      # Resolve the memory's ACTUAL op name through memory_map. `mem_name` is the
+      # source-level name (e.g. :trace); when the owning component is instantiated
+      # as a submodule its Mem op is prefixed (e.g. :cycle_trace_trace). Emitting
+      # the raw name here left the MemWrite pointing at a nonexistent memory, so
+      # the write was silently dropped for any memory inside an instance.
+      resolved_mem = case Map.get(memory_map, mem_name) do
+        %Ops.Mem{name: actual} -> actual
+        _ -> mem_name
+      end
+
       mem_write = %Ops.MemWrite{
-        memory: mem_name,
+        memory: resolved_mem,
         addr: addr_val,
         data: data_val,
         enable: enable_val,
