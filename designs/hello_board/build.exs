@@ -43,7 +43,13 @@ defmodule HelloBoard.Build do
     #   KEEP=none -> []
     #   KEEP=a,b  -> [:a, :b]
     keep_opts = build_keep_opts(System.get_env("KEEP"))
-    all_opts = opt_opts ++ keep_opts
+
+    # CASEZ=1 emits case-derived muxes as parallel `casez` instead of the
+    # priority if-chain. Neutral on area for hello_board but improves clk_48
+    # Fmax (~106 -> ~114 MHz); silicon-gated green. Unset/0 -> default emission.
+    casez_opts = if System.get_env("CASEZ") in [nil, "", "0"], do: [], else: [casez: true]
+
+    all_opts = opt_opts ++ keep_opts ++ casez_opts
 
     IO.puts("==> Elaborating and emitting Verilog#{if all_opts != [], do: " (opts: #{inspect(all_opts)})", else: ""}...")
     Hw.to_file!(@modules, verilog_file, all_opts)

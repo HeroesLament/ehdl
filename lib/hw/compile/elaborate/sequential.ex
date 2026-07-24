@@ -218,7 +218,8 @@ defmodule Hw.Compile.Elaborate.Sequential do
                   {arms, body_value, body_d}
                 else
                   {match_sig, match_d} = build_binary_match(case_val, segments, _total_width, body_d)
-                  {arms ++ [{match_sig, body_value}], default_val, match_d}
+                  pat = segments_to_pattern(segments, _total_width)
+                  {arms ++ [{match_sig, body_value, pat}], default_val, match_d}
                 end
 
               {:binary_pattern, segments, total_width} ->
@@ -234,22 +235,30 @@ defmodule Hw.Compile.Elaborate.Sequential do
                     context: segments
                 end
                 {match_sig, match_d} = build_binary_match(case_val, segments, total_width, body_d)
-                {arms ++ [{match_sig, body_value}], default_val, match_d}
+                pat = segments_to_pattern(segments, total_width)
+                {arms ++ [{match_sig, body_value, pat}], default_val, match_d}
 
               _ ->
                 {pattern_value, pattern_d} = Expr.build_expr(pattern, signal_map, instance_map, memory_map, body_d)
-                {arms ++ [{pattern_value, body_value}], default_val, pattern_d}
+                # Static casez pattern only when the arm label is a concrete
+                # constant (full-care mask); otherwise :dynamic disables casez.
+                pat =
+                  case pattern_value do
+                    %Const{value: v, width: w} -> {v, mask(w), w}
+                    _ -> :dynamic
+                  end
+                {arms ++ [{pattern_value, body_value, pat}], default_val, pattern_d}
             end
           end)
 
-          case_arms = Enum.filter(case_arms, fn {_, v} -> v != nil end)
+          case_arms = Enum.filter(case_arms, fn {_, v, _} -> v != nil end)
 
           if case_arms == [] and default_value == nil do
             {current_value, d4}
           else
             {hv, d5} = if mat_val != nil, do: {fix_const.(mat_val), d4}, else: hold.(d4)
             default_val = fix_const.(default_value || hv)
-            case_arms   = Enum.map(case_arms, fn {cond, val} -> {cond, fix_const.(val || hv)} end)
+            case_arms   = Enum.map(case_arms, fn {cond, val, pat} -> {cond, fix_const.(val || hv), pat} end)
             {case_mux_result, d6} = build_case_mux(case_val, case_arms, default_val, d5)
             {case_mux_result, d6}
           end
@@ -337,6 +346,40 @@ defmodule Hw.Compile.Elaborate.Sequential do
   end
 
   defp mask(w), do: Bitwise.bsl(1, w) - 1
+
+  # Fold a binary-pattern arm's segments (MSB-first) into a casez pattern
+  # {value, care_mask, width}. A literal segment contributes its bits to BOTH
+  # value and care_mask; a wildcard/capture segment contributes don't-care bits
+  # (clear in care_mask -> `?` in the emitted casez). Mirrors the bit-range walk
+  # in build_binary_match, so the casez pattern matches exactly the same subject
+  # values the equality AND-chain does.
+  defp segments_to_pattern(segments, total_width) do
+    {ranged, _} =
+      Enum.map_reduce(segments, total_width - 1, fn seg, hi ->
+        width =
+          case seg.width do
+            :rest -> hi + 1
+            w -> w
+          end
+
+        lo = hi - width + 1
+        {{seg, lo, width}, lo - 1}
+      end)
+
+    {value, care} =
+      Enum.reduce(ranged, {0, 0}, fn {seg, lo, w}, {value, care} ->
+        case seg do
+          %{type: :literal, value: v} ->
+            m = mask(w)
+            {value ||| ((v &&& m) <<< lo), care ||| (m <<< lo)}
+
+          _ ->
+            {value, care}
+        end
+      end)
+
+    {value, care, total_width}
+  end
 
   # Resolve :__subject__ placeholder in capture slice expressions with actual subject signal
   defp resolve_captures(body, subject_signal) do
@@ -530,7 +573,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
     # case_arms entries are already condition signals (either equality or binary match)
     # Binary pattern arms already have pre-built 1-bit match signals
     # Plain equality arms still need comparison signals built
-    {cases, d1} = Enum.reduce(case_arms, {[], design}, fn {pattern_or_cond, value}, {acc_cases, acc_d} ->
+    {cases, d1} = Enum.reduce(case_arms, {[], design}, fn {pattern_or_cond, value, _pat}, {acc_cases, acc_d} ->
       # If the pattern is already a 1-bit Signal (from binary pattern matching),
       # use it directly as the condition. Otherwise build equality comparison.
       cond_sig = case pattern_or_cond do
@@ -552,11 +595,38 @@ defmodule Hw.Compile.Elaborate.Sequential do
     {matched_default, d1b} = extend_arm(default_val, width, signed, d1)
     d2 = Design.add_signal(d1b, result_sig)
 
+    # casez metadata (see Ops.Mux): populate selector + patterns only when the
+    # subject is a real net and EVERY arm carries a static {value,mask,width}
+    # pattern of the subject's width. `patterns` is positionally aligned with
+    # `cases` (both built from case_arms in order). Otherwise leave nil, and the
+    # emitter falls back to the priority if-chain (default behaviour).
+    patterns = Enum.map(case_arms, &elem(&1, 2))
+
+    {selector, casez_patterns} =
+      case case_expr do
+        %Signal{width: sw} = sel ->
+          if patterns != [] and
+               Enum.all?(patterns, fn
+                 {_v, _m, w} -> w == sw
+                 _ -> false
+               end) do
+            {sel, patterns}
+          else
+            {nil, nil}
+          end
+
+        _ ->
+          {nil, nil}
+      end
+
     mux_op = %Ops.Mux{
       output: result_sig,
       cases: cases,
-      default: matched_default
+      default: matched_default,
+      selector: selector,
+      patterns: casez_patterns
     }
+
     d3 = Design.add_op(d2, mux_op)
 
     {result_sig, d3}

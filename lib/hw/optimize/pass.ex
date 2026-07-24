@@ -122,9 +122,11 @@ defmodule Hw.Optimize.Pass do
   # -- Concat: a list of values, MSB-first --
   def operand_values(%Concat{inputs: inputs}), do: inputs
 
-  # -- Mux: every case cond and val, plus default --
-  def operand_values(%Mux{cases: cases, default: default}) do
-    Enum.flat_map(cases, fn {cond, val} -> [cond, val] end) ++ [default]
+  # -- Mux: every case cond and val, plus default, plus the casez selector
+  #    (present only on case-derived muxes; read by casez emission) --
+  def operand_values(%Mux{cases: cases, default: default, selector: sel}) do
+    base = Enum.flat_map(cases, fn {cond, val} -> [cond, val] end) ++ [default]
+    if sel, do: [sel | base], else: base
   end
 
   # -- Complex ops: read the re/im operands --
@@ -329,7 +331,8 @@ defmodule Hw.Optimize.Pass do
       %Mux{cases: cases, default: default} = o ->
         %{o |
           cases: Enum.map(cases, fn {c, v} -> {remap.(c), remap.(v)} end),
-          default: remap.(default)}
+          default: remap.(default),
+          selector: remap.(o.selector)}
 
       %ComplexMul{} = o ->
         %{o | a_re: remap.(o.a_re), a_im: remap.(o.a_im), b_re: remap.(o.b_re), b_im: remap.(o.b_im)}

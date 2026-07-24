@@ -44,6 +44,11 @@ defmodule Hw.Emit.Verilog do
     policies = Keyword.get(opts, :keep_policies, [:clock_domain_preservation])
     kept = Hw.Compile.KeepPolicy.compute(design, policies: policies)
 
+    # Emit case-derived muxes as parallel `casez` (decoded once) instead of the
+    # priority if-chain when opts[:casez] is set. Off by default -> byte-identical
+    # emission. Requires the Mux to carry selector+patterns metadata (elaborator).
+    casez? = Keyword.get(opts, :casez, false)
+
     [
       emit_module_header(design),
       emit_port_declarations(design),
@@ -53,7 +58,7 @@ defmodule Hw.Emit.Verilog do
       emit_memory_declarations(design),
       emit_initial_values(design),
       "",
-      emit_combinational_logic(design, kept),
+      emit_combinational_logic(design, kept, casez?),
       "",
       Sequential.emit_sequential_logic(design.ops, design.clocks, kept),
       Sequential.emit_memory_logic(design.ops, design.clocks),
@@ -281,14 +286,14 @@ defmodule Hw.Emit.Verilog do
 
   # --- Combinational Logic ---
 
-  defp emit_combinational_logic(%Design{ops: ops}, _kept) do
+  defp emit_combinational_logic(%Design{ops: ops}, _kept, casez?) do
     comb_ops = Enum.filter(ops, &is_combinational?/1)
 
     case comb_ops do
       [] -> []
       _ ->
         ["  // Combinational logic" |
-          Enum.map(comb_ops, &Ops.emit_comb_op/1)
+          Enum.map(comb_ops, &Ops.emit_comb_op(&1, casez?))
         ]
     end
   end

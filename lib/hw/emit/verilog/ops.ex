@@ -86,4 +86,12 @@ defmodule Hw.Emit.Verilog.Ops do
   def emit_comb_op(%ComplexSub{} = op), do: Complex.emit(op)
   def emit_comb_op(%ComplexMagSq{} = op), do: Complex.emit(op)
   def emit_comb_op(%ComplexConj{} = op), do: Complex.emit(op)
+
+  @doc """
+  casez-aware combinational emit. Only `Mux` behaves differently under casez
+  (it may render a `casez` instead of a priority if-chain); every other op
+  ignores the flag and falls through to the arity-1 form.
+  """
+  def emit_comb_op(%Mux{} = op, casez?), do: Structure.emit(op, casez?)
+  def emit_comb_op(op, _casez?), do: emit_comb_op(op)
 end
