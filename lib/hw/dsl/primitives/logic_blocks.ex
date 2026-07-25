@@ -86,6 +86,197 @@ defmodule Hw.DSL.Primitives.LogicBlocks do
     raise "next must be used inside an fsm block"
   end
 
+  # ---------------------------------------------------------------------------
+  # Pipeline — feed-forward staged datapath sugar.
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Declare a feed-forward pipeline.
+
+  Each `stage do out = expr end` becomes one registered stage. Stage outputs are
+  auto-declared with inferred width (`:infer`, resolved from the driver), and a
+  valid bit is threaded from `valid_in:` to `valid_out:`, delayed to match the
+  pipeline depth so a caller knows when the output is real. Only the valid chain
+  is reset; data registers are left un-reset (they are don't-care until valid).
+
+      pipeline :cfar, clock: :clk, reset: :rst, valid_in: :in_v, valid_out: :det_v do
+        stage do noise_sum = sum_l + sum_t end
+        stage do noise     = noise_sum >>> LOG2_N end
+        stage do thresh    = noise * ALPHA end
+        stage do detect    = cut > thresh end
+      end
+
+  Options: `clock:` (required), `reset:`, `valid_in:`, `valid_out:`.
+  Stage inputs, `valid_in`, and `valid_out` are declared by the caller; the
+  stage outputs and the intermediate valid registers are generated here.
+  """
+  defmacro pipeline(name, opts, do: block) do
+    clock     = Keyword.fetch!(opts, :clock)
+    reset     = Keyword.get(opts, :reset)
+    valid_in  = Keyword.get(opts, :valid_in)
+    valid_out = Keyword.get(opts, :valid_out)
+
+    stage_stmts = block |> extract_pipeline_stages() |> Enum.map(&pipeline_stage_stmt/1)
+
+    if stage_stmts == [] do
+      raise "pipeline #{inspect(name)} has no `stage do ... end` blocks"
+    end
+
+    stage_outs = Enum.map(stage_stmts, &pipeline_assign_target/1)
+    n = length(stage_stmts)
+
+    # --- Phase 2: auto-balance cross-stage references. ------------------------
+    # A signal referenced in stage i must arrive at depth i. The prior stage's
+    # output already does; anything older (an external input, or a stage output
+    # from further back) is delayed by matching registers so it lines up with
+    # the sample flowing through.
+    # Classification is by AST shape, which matches EHDL naming convention:
+    # lowercase bare identifiers are signals; UPPERCASE params parse as aliases
+    # (not vars) and calls/literals aren't vars either, so neither is ever
+    # delayed. This needs no module-attribute lookups (which aren't populated at
+    # macro-expansion time anyway).
+    stage_index = stage_outs |> Enum.with_index() |> Map.new()
+
+    {stage_stmts, delay_max} =
+      stage_stmts
+      |> Enum.with_index()
+      |> Enum.map_reduce(%{}, fn {stmt, i}, dmax ->
+        {new_stmt, used} = rewrite_stage(stmt, i, stage_index)
+        {new_stmt, merge_delays(dmax, used)}
+      end)
+
+    delay_assigns = build_delay_chains(delay_max)
+    delay_wires   = delay_wire_decls(delay_max)
+
+    # Valid chain: valid_out = valid_in delayed n cycles (n-1 intermediate regs).
+    {valid_shift, valid_reset, valid_intermediates} =
+      if valid_in && valid_out do
+        inters  = for i <- 1..(n - 1)//1, do: :"#{name}__valid_#{i}"
+        targets = inters ++ [valid_out]
+        sources = [valid_in | inters]
+        shift   = targets |> Enum.zip(sources) |> Enum.map(fn {t, s} -> pipe_assign(t, pipe_var(s)) end)
+        reset   = Enum.map(targets, fn t -> pipe_assign(t, 0) end)
+        {shift, reset, inters}
+      else
+        {[], [], []}
+      end
+
+    valid_block =
+      case {reset, valid_shift} do
+        {rst, [_ | _]} when not is_nil(rst) ->
+          # Only the valid chain is reset; data registers load unconditionally.
+          [
+            quote do
+              if unquote(pipe_var(rst)) do
+                unquote_splicing(valid_reset)
+              else
+                unquote_splicing(valid_shift)
+              end
+            end
+          ]
+
+        _ ->
+          valid_shift
+      end
+
+    on_body = {:__block__, [], delay_assigns ++ stage_stmts ++ valid_block}
+
+    infer_wires = for o <- stage_outs ++ delay_wires, do: quote(do: wire(unquote(o), :infer))
+    valid_wires = for v <- valid_intermediates, do: quote(do: wire(unquote(v), 1, init: 0))
+
+    quote do
+      unquote_splicing(infer_wires)
+      unquote_splicing(valid_wires)
+
+      on unquote(clock) do
+        unquote(on_body)
+      end
+    end
+  end
+
+  @doc false
+  defmacro stage(do: _block) do
+    raise "stage must be used inside a pipeline block"
+  end
+
+  # Extract the list of stage bodies (raw AST) from a pipeline do-block.
+  defp extract_pipeline_stages({:__block__, _, stmts}) do
+    stmts
+    |> Enum.filter(&match?({:stage, _, [[do: _]]}, &1))
+    |> Enum.map(fn {:stage, _, [[do: body]]} -> body end)
+  end
+  defp extract_pipeline_stages({:stage, _, [[do: body]]}), do: [body]
+  defp extract_pipeline_stages(_), do: []
+
+  # A stage body must be a single `out = expr` assignment (Phase 1 scope).
+  defp pipeline_stage_stmt({:__block__, _, [single]}), do: pipeline_stage_stmt(single)
+  defp pipeline_stage_stmt({:=, _, [_lhs, _rhs]} = assign), do: assign
+  defp pipeline_stage_stmt(other) do
+    raise "each pipeline stage must be a single `out = expr` assignment, got: #{Macro.to_string(other)}"
+  end
+
+  defp pipeline_assign_target({:=, _, [{name, _, _}, _]}) when is_atom(name), do: name
+  defp pipeline_assign_target(other) do
+    raise "pipeline stage must assign a bare signal name, got: #{Macro.to_string(other)}"
+  end
+
+  defp pipe_var(name), do: Macro.var(name, nil)
+  defp pipe_assign(target, value_ast), do: {:=, [], [pipe_var(target), value_ast]}
+
+  # Rewrite one stage's RHS so each cross-stage reference reads its delay-aligned
+  # tap. Returns {rewritten_assign, %{source => max_delay_used_here}}.
+  defp rewrite_stage({:=, m, [lhs, rhs]}, i, stage_index) do
+    {new_rhs, used} =
+      Macro.prewalk(rhs, %{}, fn
+        {nm, vm, ctx}, acc when is_atom(nm) and not is_list(ctx) ->
+          case ref_delay(nm, i, stage_index) do
+            0 ->
+              {{nm, vm, ctx}, acc}
+
+            d when d > 0 ->
+              tap = :"#{nm}__dly_#{d}"
+              {{tap, vm, ctx}, Map.update(acc, nm, d, &max(&1, d))}
+
+            d when d < 0 ->
+              raise "pipeline: stage #{i} references `#{nm}` from the same or a later " <>
+                    "stage (illegal feedback/forward reference in a pipeline)"
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    {{:=, m, [lhs, new_rhs]}, used}
+  end
+
+  # Delay a reference to `nm` needs as a stage-`i` operand. A prior stage output
+  # is already aligned (delay 0); an older stage output needs `i - j - 1`; every
+  # other bare signal is a streaming input and needs `i`. Params are aliases and
+  # never reach here, so they stay compile-time constants.
+  defp ref_delay(nm, i, stage_index) do
+    case Map.get(stage_index, nm) do
+      nil -> i
+      j   -> i - j - 1
+    end
+  end
+
+  defp merge_delays(dmax, used), do: Map.merge(dmax, used, fn _k, a, b -> max(a, b) end)
+
+  defp build_delay_chains(delay_max) do
+    Enum.flat_map(delay_max, fn {src, m} ->
+      for d <- 1..m//1 do
+        prev = if d == 1, do: src, else: :"#{src}__dly_#{d - 1}"
+        pipe_assign(:"#{src}__dly_#{d}", pipe_var(prev))
+      end
+    end)
+  end
+
+  defp delay_wire_decls(delay_max) do
+    Enum.flat_map(delay_max, fn {src, m} ->
+      for d <- 1..m//1, do: :"#{src}__dly_#{d}"
+    end)
+  end
+
   # Post-process case body to merge if statements with following fsm_else
   defp postprocess_fsm_case(%{type: :case, clauses: clauses} = case_body) do
     %{case_body | clauses: Enum.map(clauses, &postprocess_clause/1)}

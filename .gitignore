@@ -54,6 +54,7 @@ ehdl_snapshot_*.tar.gz
 /designs/hello_board/build/
 /designs/mcp2515_bringup/build/
 /designs/usb_vendor_bringup/build/
+/designs/pipeline_bringup/build/
 
 # Scratch / debug capture files.
 /gd1.txt

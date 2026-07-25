@@ -69,6 +69,9 @@ defmodule Hw.IR.Types.Signal do
     - `{:param, atom()}` — width equals the named parameter value
     - `{:param, atom(), (pos_integer() -> pos_integer())}` — width is
       a function of a parameter value
+    - `:infer` — a sentinel meaning "size me from my single driver". Resolved
+      to a concrete integer by `Hw.Compile.InferWidths` before the main
+      elaboration runs, so nothing downstream ever sees `:infer`.
 
   ## Source Locations
 
@@ -87,6 +90,7 @@ defmodule Hw.IR.Types.Signal do
 
   @type width ::
     pos_integer()
+    | :infer
     | {:param, atom()}
     | {:param, atom(), (pos_integer() -> pos_integer())}
 

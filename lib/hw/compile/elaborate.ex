@@ -67,6 +67,11 @@ defmodule Hw.Compile.Elaborate do
       end)
       |> Map.new()
 
+    # Resolve `:infer`-width signals from their single driver (in dataflow
+    # order) before anything consumes concrete widths. No-op when the design
+    # declares no `:infer` signals.
+    signal_map = Hw.Compile.InferWidths.resolve(signal_map, param_const_map, logic, memory_map)
+
     # Start building the design
     design = Design.new(name)
 
@@ -264,6 +269,10 @@ defmodule Hw.Compile.Elaborate do
   # Resolve a value that might be a param reference or expression
   def resolve_param_pub(value, param_map), do: resolve_param(value, param_map)
   defp resolve_param(value, _param_map) when is_integer(value), do: value
+
+  # `:infer` is a sentinel resolved later by Hw.Compile.InferWidths — pass it
+  # through untouched instead of treating it as an unknown parameter name.
+  defp resolve_param(:infer, _param_map), do: :infer
 
   defp resolve_param(name, param_map) when is_atom(name) do
     case Map.get(param_map, name) do
