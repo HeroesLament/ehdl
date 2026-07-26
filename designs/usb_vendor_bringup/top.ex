@@ -764,6 +764,7 @@ defmodule UsbVendorBringup.Top do
     phy_rx_se0:      :phy_rx_se0,
     phy_rx_active:   :phy_rx_active,
     phy_rx_bit0:     :phy_rx_bit0,
+    phy_rx_pid_done: :phy_rx_pid_done,
     phy_tx_valid:    :phy_tx_valid,
     phy_tx_data:     :phy_tx_data,
     phy_tx_se0:      :phy_tx_se0,
