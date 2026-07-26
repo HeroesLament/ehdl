@@ -3,7 +3,8 @@
 #
 # Usage:
 #   mix run designs/hello_board/build.exs
-#   mix run designs/hello_board/build.exs --flash
+#   mix run designs/hello_board/build.exs --flash       # build + write SPI flash (persistent)
+#   mix run designs/hello_board/build.exs --build-only  # build the .bit only, don't touch the board
 #
 # Requires:
 #   yosys, nextpnr-ecp5, ecppack, fujprog on PATH
@@ -22,7 +23,8 @@ defmodule HelloBoard.Build do
   @top_name "hello_board_top"
 
   def run(args) do
-    flash? = "--flash" in args
+    flash?      = "--flash" in args
+    build_only? = "--build-only" in args
     File.mkdir_p!(@build_dir)
 
     verilog_file = Path.join(@build_dir, "#{@top_name}.v")
@@ -107,12 +109,17 @@ defmodule HelloBoard.Build do
 
     IO.puts("==> Done: #{bit_file}")
 
-    if flash? do
-      IO.puts("==> Flashing to SPI flash with fujprog (persistent)...")
-      cmd!("fujprog -j FLASH #{bit_file}")
-    else
-      IO.puts("==> Loading to SRAM with fujprog (volatile)...")
-      cmd!("fujprog #{bit_file}")
+    cond do
+      build_only? ->
+        IO.puts("==> --build-only: bitstream ready, board not touched.")
+
+      flash? ->
+        IO.puts("==> Flashing to SPI flash with fujprog (persistent)...")
+        cmd!("fujprog -j FLASH #{bit_file}")
+
+      true ->
+        IO.puts("==> Loading to SRAM with fujprog (volatile)...")
+        cmd!("fujprog #{bit_file}")
     end
   end
 
