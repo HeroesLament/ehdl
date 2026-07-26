@@ -12,13 +12,20 @@ defmodule Hw.Compile.Elaborate.Instances do
   @doc """
   Elaborate all instances, returning {design, signal_map, instance_map}.
   """
-  def elaborate_instances(design, instances, clock_map, signal_map, logic_elaborator) do
+  def elaborate_instances(design, instances, clock_map, signal_map, logic_elaborator, parent_param_map \\ %{}) do
     Enum.reduce(instances, {design, signal_map, %{}}, fn inst, {d, sig_map, inst_map} ->
-      elaborate_instance(d, inst, clock_map, sig_map, inst_map, logic_elaborator)
+      elaborate_instance(d, inst, clock_map, sig_map, inst_map, logic_elaborator, parent_param_map)
     end)
   end
 
-  defp elaborate_instance(design, %{name: inst_name, module: child_module, ports: port_map}, clock_map, signal_map, instance_map, _logic_elaborator) do
+  defp elaborate_instance(design, %{name: inst_name, module: child_module, ports: port_map}, clock_map, signal_map, instance_map, _logic_elaborator, parent_param_map) do
+    # `function_exported?/3` answers false for a module that has not been loaded
+    # yet, so the child must be loaded before any optional-callback probe below.
+    # (This used to happen by accident, as a side effect of the first
+    # `child_module.__hw_*__()` call. Relying on that meant a cold VM silently
+    # saw zero parameters.)
+    Code.ensure_loaded!(child_module)
+
     # Get child's definition
     child_clocks = child_module.__hw_clocks__()
     child_signals = child_module.__hw_signals__()
@@ -29,15 +36,33 @@ defmodule Hw.Compile.Elaborate.Instances do
     # logic blocks resolve correctly when elaborated as an instance.
     # sim_only defhws (containing `on` blocks) are excluded from hardware
     # elaboration — they are only used by the simulation interpreter.
-    child_defhws = if function_exported?(child_module, :__hw_defhw__, 0),
+    child_defhws = if (Code.ensure_loaded?(child_module) and function_exported?(child_module, :__hw_defhw__, 0)),
       do: child_module.__hw_defhw__(), else: []
     child_defhw_map = child_defhws
       |> Enum.reject(fn d -> Map.get(d, :sim_only, false) end)
       |> Map.new(fn d -> {d.name, d} end)
 
+    # Resolve the child's parameters before anything that depends on them:
+    # signal widths, memories, grandchild instances and the child's own logic.
+    #
+    # port_map carries both signal connections and parameter overrides
+    # (e.g. CLKOP_DIV: 13); parameters are matched out of it by name. A value
+    # written as a bare uppercase name is a reference to one of the *enclosing*
+    # module's parameters — see resolve_instance_param/4.
+    child_params = if (Code.ensure_loaded?(child_module) and function_exported?(child_module, :__hw_params__, 0)),
+      do: child_module.__hw_params__(), else: []
+    param_names = MapSet.new(child_params, & &1.name)
+    child_params_with_values = Enum.map(child_params, fn p ->
+      case Keyword.get(port_map, p.name) do
+        nil -> p
+        val -> Map.put(p, :value, resolve_instance_param(val, parent_param_map, inst_name, p.name))
+      end
+    end)
+    child_param_map = Hw.Compile.Elaborate.build_param_map_pub(child_params_with_values)
+
     # Build child's internal maps (unprefixed)
     child_clock_map = build_clock_map(child_clocks)
-    child_signal_map = build_signal_map(child_signals)
+    child_signal_map = build_signal_map(child_signals, child_param_map)
 
     # Create prefixed signals for child's ports and internals
     {design, prefixed_signal_map} = create_prefixed_signals(design, inst_name, child_signal_map, signal_map, port_map)
@@ -72,27 +97,15 @@ defmodule Hw.Compile.Elaborate.Instances do
       Hw.Compile.Elaborate.elaborate_logic_block(d, lb, cm, sm, im, mm, child_defhw_map, cwm)
     end
 
-    # Recursively elaborate child instances
+    # Recursively elaborate child instances, handing them the child's resolved
+    # params as their enclosing scope.
     {design, merged_signal_map, child_instance_map} =
-      elaborate_child_instances(design, child_instances, inst_name, child_clock_map, merged_signal_map, child_logic_elaborator)
+      elaborate_child_instances(design, child_instances, inst_name, child_clock_map, merged_signal_map, child_logic_elaborator, child_param_map)
     # Build child memory map (prefixed) and add memories to design
-    child_raw_memories = if function_exported?(child_module, :__hw_memories__, 0),
+    child_raw_memories = if (Code.ensure_loaded?(child_module) and function_exported?(child_module, :__hw_memories__, 0)),
       do: child_module.__hw_memories__(), else: []
-    child_params = if function_exported?(child_module, :__hw_params__, 0),
-      do: child_module.__hw_params__(), else: []
-    # Merge param values from the instance port_map into the param declarations.
-    # port_map contains both signal connections AND param overrides (e.g. CLKOP_DIV: 13).
-    # Params are uppercase atoms by convention; we extract them from port_map here.
-    param_names = MapSet.new(child_params, & &1.name)
-    child_params_with_values = Enum.map(child_params, fn p ->
-      case Keyword.get(port_map, p.name) do
-        nil -> p
-        val -> Map.put(p, :value, val)
-      end
-    end)
     # Also filter port_map to remove param keys so they don't confuse signal resolution
     port_map = Keyword.reject(port_map, fn {k, _} -> MapSet.member?(param_names, k) end)
-    child_param_map = Hw.Compile.Elaborate.build_param_map_pub(child_params_with_values)
 
     {design, child_memory_map} = Enum.reduce(child_raw_memories, {design, %{}}, fn mem, {d, mmap} ->
       resolved_width = Hw.Compile.Elaborate.resolve_param_pub(mem.width, child_param_map)
@@ -109,7 +122,7 @@ defmodule Hw.Compile.Elaborate.Instances do
     end)
 
     # Elaborate child blackboxes (using prefixed signal map)
-    child_blackboxes = if function_exported?(child_module, :__hw_blackboxes__, 0),
+    child_blackboxes = if (Code.ensure_loaded?(child_module) and function_exported?(child_module, :__hw_blackboxes__, 0)),
       do: child_module.__hw_blackboxes__(), else: []
     design = Enum.reduce(child_blackboxes, design, fn bb, d ->
       ports = for {port_name, connection} <- bb.ports do
@@ -157,7 +170,7 @@ defmodule Hw.Compile.Elaborate.Instances do
     end)
 
     # Elaborate child tristates (using prefixed signal map)
-    child_tristates = if function_exported?(child_module, :__hw_tristates__, 0),
+    child_tristates = if (Code.ensure_loaded?(child_module) and function_exported?(child_module, :__hw_tristates__, 0)),
       do: child_module.__hw_tristates__(), else: []
     design = Enum.reduce(child_tristates, design, fn ts, d ->
       lookup = fn name -> Map.get(prefixed_signal_map, name, Map.get(merged_signal_map, name)) end
@@ -203,7 +216,7 @@ defmodule Hw.Compile.Elaborate.Instances do
 
     # Process child FSMs — must run after logic blocks, using the same
     # param_signal_map so the state signal resolves to its prefixed name.
-    child_fsms = if function_exported?(child_module, :__hw_fsm__, 0),
+    child_fsms = if (Code.ensure_loaded?(child_module) and function_exported?(child_module, :__hw_fsm__, 0)),
       do: child_module.__hw_fsm__(), else: []
     design = Enum.reduce(child_fsms, design, fn fsm, d ->
       Hw.Compile.Elaborate.elaborate_fsm(d, fsm, child_clock_map, param_signal_map, child_instance_map, child_memory_map, child_defhw_map, child_const_wire_map)
@@ -218,11 +231,26 @@ defmodule Hw.Compile.Elaborate.Instances do
     end
     instance_map = Map.put(instance_map, inst_name, instance_signals)
 
-    {design, merged_signal_map, instance_map}
+    # Hand the ENCLOSING scope back to the caller, not the child-priority map.
+    #
+    # `merged_signal_map` is keyed by the child's *unprefixed* names so the
+    # child's own logic resolves against its prefixed signals. Returning it
+    # would inject every child internal name into the parent's namespace, where
+    # `elaborate/1` rebinds signal_map from this return value before elaborating
+    # the parent's own logic and FSMs. A parent signal sharing a name with any
+    # instance's internal signal would then silently resolve to the child's
+    # signal instead of its own — wrong hardware with no diagnostic, because it
+    # only trips the multiple-driver check when the parent also writes the name.
+    #
+    # Merging the other way round makes the parent's own declarations win, while
+    # still letting non-colliding child names through for connection handling.
+    outward_signal_map = Map.merge(merged_signal_map, signal_map)
+
+    {design, outward_signal_map, instance_map}
   end
 
   defp get_instances(module) do
-    if function_exported?(module, :__hw_instances__, 0) do
+    if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_instances__, 0)) do
       module.__hw_instances__()
     else
       []
@@ -344,12 +372,52 @@ defmodule Hw.Compile.Elaborate.Instances do
     end
   end
 
-  defp elaborate_child_instances(design, child_instances, parent_inst_name, clock_map, signal_map, logic_elaborator) do
+  defp elaborate_child_instances(design, child_instances, parent_inst_name, clock_map, signal_map, logic_elaborator, parent_param_map) do
     Enum.reduce(child_instances, {design, signal_map, %{}}, fn inst, {d, sig_map, inst_map} ->
       prefixed_inst = %{inst | name: :"#{parent_inst_name}_#{inst.name}"}
-      elaborate_instance(d, prefixed_inst, clock_map, sig_map, inst_map, logic_elaborator)
+      elaborate_instance(d, prefixed_inst, clock_map, sig_map, inst_map, logic_elaborator, parent_param_map)
     end)
   end
+
+  # Resolve one instance parameter value against the *enclosing* module's params.
+  #
+  # A bare uppercase name in an instance option is parsed by Elixir as an alias,
+  # so `TQ_CLOCKS: TQ_CLOCKS` reaches us as the atom :"Elixir.TQ_CLOCKS". That is
+  # the same "uppercase means parameter" convention the `pipeline` macro relies
+  # on for auto-balance, applied one level out. Demangle it and look it up.
+  #
+  # Anything else passes through untouched, so integer literals and any existing
+  # instance option behave exactly as before.
+  defp resolve_instance_param(value, parent_param_map, inst_name, param_name) when is_atom(value) do
+    case Atom.to_string(value) do
+      "Elixir." <> bare ->
+        if String.contains?(bare, ".") do
+          # Multi-segment alias: a module name, not a parameter reference.
+          value
+        else
+          name = String.to_atom(bare)
+
+          if Map.has_key?(parent_param_map, name) do
+            Hw.Compile.Elaborate.resolve_param_pub(name, parent_param_map)
+          else
+            declared =
+              parent_param_map |> Map.keys() |> Enum.sort() |> Enum.map_join(", ", &to_string/1)
+
+            raise Hw.Compile.Elaborate.ElabError,
+              message:
+                "instance #{inspect(inst_name)} forwards #{param_name}: #{bare}, but the " <>
+                  "enclosing module declares no parameter #{bare}. Declared: " <>
+                  if(declared == "", do: "(none)", else: declared),
+              context: {inst_name, param_name}
+          end
+        end
+
+      _ ->
+        value
+    end
+  end
+
+  defp resolve_instance_param(value, _parent_param_map, _inst_name, _param_name), do: value
 
   defp create_port_connections(design, _inst_name, child_signal_map, port_map, parent_signal_map, prefixed_signal_map) do
     Enum.reduce(port_map, design, fn {child_port, connection}, d ->
@@ -411,14 +479,20 @@ defmodule Hw.Compile.Elaborate.Instances do
     end
   end
 
-  defp build_signal_map(signals) do
+  # Widths are resolved against the child's own parameters here, mirroring what
+  # the top-level `build_signal_map/2` does. Without this a child that sizes a
+  # signal from one of its parameters (`wire :r, WIDTH`, `clog2(DEPTH) + 1`)
+  # reaches the design with an unresolved parameter expression as its width.
+  defp build_signal_map(signals, param_map) do
     for sig <- signals, into: %{} do
       signal = case sig do
-        %Signal{} -> sig
+        %Signal{} = s ->
+          %Signal{s | width: Hw.Compile.Elaborate.resolve_param_pub(s.width, param_map)}
+
         %{name: name, width: width} ->
           %Signal{
             name:         name,
-            width:        width,
+            width:        Hw.Compile.Elaborate.resolve_param_pub(width, param_map),
             signed:       Map.get(sig, :signed, :unsigned),
             direction:    Map.get(sig, :direction, :internal),
             init:         Map.get(sig, :init),

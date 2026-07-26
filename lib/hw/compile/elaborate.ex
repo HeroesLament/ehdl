@@ -110,7 +110,7 @@ defmodule Hw.Compile.Elaborate do
     logic_elaborator = fn d, lb, cm, sm, im, mm, cwm ->
       elaborate_logic_block(d, lb, cm, sm, im, mm, defhw_map, cwm)
     end
-    {design, signal_map, instance_map} = Instances.elaborate_instances(design, instances, clock_map, signal_map, logic_elaborator)
+    {design, signal_map, instance_map} = Instances.elaborate_instances(design, instances, clock_map, signal_map, logic_elaborator, param_map)
 
     # Process interface connections
     design = Instances.elaborate_connections(design, connections, interfaces, signal_map, instance_map)
@@ -139,35 +139,35 @@ defmodule Hw.Compile.Elaborate do
   # --- Module Attribute Getters ---
 
   defp get_instances(module) do
-    if function_exported?(module, :__hw_instances__, 0), do: module.__hw_instances__(), else: []
+    if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_instances__, 0)), do: module.__hw_instances__(), else: []
   end
 
   defp get_connections(module) do
-    if function_exported?(module, :__hw_connections__, 0), do: module.__hw_connections__(), else: []
+    if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_connections__, 0)), do: module.__hw_connections__(), else: []
   end
 
   defp get_interfaces(module) do
-    if function_exported?(module, :__hw_interfaces__, 0), do: module.__hw_interfaces__(), else: []
+    if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_interfaces__, 0)), do: module.__hw_interfaces__(), else: []
   end
 
   defp get_memories(module) do
-    if function_exported?(module, :__hw_memories__, 0), do: module.__hw_memories__(), else: []
+    if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_memories__, 0)), do: module.__hw_memories__(), else: []
   end
 
   defp get_blackboxes(module) do
-    if function_exported?(module, :__hw_blackboxes__, 0), do: module.__hw_blackboxes__(), else: []
+    if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_blackboxes__, 0)), do: module.__hw_blackboxes__(), else: []
   end
 
   defp get_tristates(module) do
-    if function_exported?(module, :__hw_tristates__, 0), do: module.__hw_tristates__(), else: []
+    if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_tristates__, 0)), do: module.__hw_tristates__(), else: []
   end
 
   defp get_fsms(module) do
-    if function_exported?(module, :__hw_fsm__, 0), do: module.__hw_fsm__(), else: []
+    if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_fsm__, 0)), do: module.__hw_fsm__(), else: []
   end
 
   defp get_defhws(module) do
-    if function_exported?(module, :__hw_defhw__, 0), do: module.__hw_defhw__(), else: []
+    if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_defhw__, 0)), do: module.__hw_defhw__(), else: []
   end
 
   # Scan all logic blocks for flat `signal = const` assignments — these are
@@ -192,7 +192,7 @@ defmodule Hw.Compile.Elaborate do
   defp scan_const_assigns(_, acc), do: acc
 
   defp get_params(module) do
-    if function_exported?(module, :__hw_params__, 0), do: module.__hw_params__(), else: []
+    if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_params__, 0)), do: module.__hw_params__(), else: []
   end
 
   # --- Map Building ---
