@@ -207,7 +207,7 @@ defmodule Hw.Analysis.Rules.ParamBoundary do
   defp eval_expr(_, _), do: {:error, :unknown}
 
   defp get_params(module) do
-    if function_exported?(module, :__hw_params__, 0) do
+    if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_params__, 0)) do
       module.__hw_params__()
     else
       []

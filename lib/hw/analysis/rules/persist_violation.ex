@@ -45,6 +45,10 @@ defmodule Hw.Analysis.Rules.PersistViolation do
   @impl true
   def priority, do: 57
 
+  # Inspects the elaborated netlist (.signals/.ops), not module metadata.
+  @impl true
+  def stage, do: :ir
+
   @impl true
   def run(design) do
     signal_map = Map.new(design.signals, &{&1.name, &1})

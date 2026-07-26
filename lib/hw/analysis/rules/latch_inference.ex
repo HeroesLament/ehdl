@@ -119,7 +119,7 @@ defmodule Hw.Analysis.Rules.LatchInference do
 
   defp safe_design(module) do
     try do
-      if function_exported?(module, :__hw_design__, 0), do: module.__hw_design__()
+      if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_design__, 0)), do: module.__hw_design__()
     rescue
       _ -> nil
     end

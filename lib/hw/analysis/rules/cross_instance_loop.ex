@@ -302,7 +302,7 @@ defmodule Hw.Analysis.Rules.CrossInstanceLoop do
 
   defp safe_design(module) do
     try do
-      if function_exported?(module, :__hw_design__, 0), do: module.__hw_design__()
+      if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_design__, 0)), do: module.__hw_design__()
     rescue
       _ -> nil
     end
@@ -310,7 +310,7 @@ defmodule Hw.Analysis.Rules.CrossInstanceLoop do
 
   defp safe_instances(module) do
     try do
-      if function_exported?(module, :__hw_instances__, 0), do: module.__hw_instances__(), else: []
+      if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_instances__, 0)), do: module.__hw_instances__(), else: []
     rescue
       _ -> []
     end
@@ -318,7 +318,7 @@ defmodule Hw.Analysis.Rules.CrossInstanceLoop do
 
   defp safe_signals(module) do
     try do
-      if function_exported?(module, :__hw_signals__, 0), do: module.__hw_signals__(), else: []
+      if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_signals__, 0)), do: module.__hw_signals__(), else: []
     rescue
       _ -> []
     end

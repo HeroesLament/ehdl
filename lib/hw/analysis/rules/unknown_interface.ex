@@ -46,7 +46,7 @@ defmodule Hw.Analysis.Rules.UnknownInterface do
           loc
         )]
 
-      not function_exported?(iface_mod, :__hw_interface_signals__, 0) ->
+      not (Code.ensure_loaded?(iface_mod) and function_exported?(iface_mod, :__hw_interface_signals__, 0)) ->
         [Diagnostic.error(
           :unknown_interface,
           "#{inspect(component_mod)} #{role_str} #{inspect(iface_mod)} as :#{name}, " <>

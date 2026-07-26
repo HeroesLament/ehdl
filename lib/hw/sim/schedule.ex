@@ -57,7 +57,7 @@ defmodule Hw.Sim.Schedule do
     signal_widths = build_signal_widths(design.signals)
 
     # Build instance name -> module map from top module's instance declarations
-    instance_modules = if top_module && function_exported?(top_module, :__hw_instances__, 0) do
+    instance_modules = if top_module && (Code.ensure_loaded?(top_module) and function_exported?(top_module, :__hw_instances__, 0)) do
       top_module.__hw_instances__()
       |> Enum.map(fn inst -> {inst.name, inst.module} end)
       |> Map.new()

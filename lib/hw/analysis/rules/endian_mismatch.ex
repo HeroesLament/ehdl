@@ -40,6 +40,10 @@ defmodule Hw.Analysis.Rules.EndianMismatch do
   @impl true
   def priority, do: 27
 
+  # Inspects the elaborated netlist (.signals/.ops), not module metadata.
+  @impl true
+  def stage, do: :ir
+
   @impl true
   def run(design) do
     signal_map = Map.new(design.signals, &{&1.name, &1})
@@ -48,7 +52,11 @@ defmodule Hw.Analysis.Rules.EndianMismatch do
     |> Enum.flat_map(&check_op(&1, signal_map))
   end
 
-  defp check_op(%Ops.Assign{output: out_sig, input: in_sig}, signal_map) do
+  # The guard matters: an Assign's operand can be a %Const{}, which has no
+  # :name. Dereferencing it raised KeyError and, before rules were isolated,
+  # took the whole analysis suite down.
+  defp check_op(%Ops.Assign{output: out_sig, input: in_sig}, signal_map)
+       when is_map_key(out_sig, :name) and is_map_key(in_sig, :name) do
     out = Map.get(signal_map, out_sig.name, out_sig)
     inp = Map.get(signal_map, in_sig.name, in_sig)
 

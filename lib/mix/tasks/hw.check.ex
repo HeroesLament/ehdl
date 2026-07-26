@@ -84,16 +84,37 @@ defmodule Mix.Tasks.Hw.Check do
   # ---------------------------------------------------------------------------
 
   defp discover_hw_modules do
-    # Load all beam files in the build path and find modules that
-    # export __hw_signals__/0 (Hw.Component) or __hw_interface_signals__/0 (Hw.Interface)
-    :code.all_loaded()
-    |> Enum.map(fn {mod, _} -> mod end)
+    # Enumerate the application's modules from its spec rather than reading
+    # :code.all_loaded/0.
+    #
+    # Elixir loads modules lazily, so under `mix hw.check` almost nothing is
+    # loaded yet and :code.all_loaded/0 returns a near-empty list — which made
+    # this task silently report "No Hw.Component or Hw.Interface modules found"
+    # and skip the entire analysis suite. The application spec lists every
+    # compiled module whether or not it happens to be loaded.
+    app = Mix.Project.config()[:app]
+
+    from_app =
+      case :application.get_key(app, :modules) do
+        {:ok, mods} -> mods
+        _ -> []
+      end
+
+    # Anything already loaded but outside the app spec still counts — e.g. a
+    # design module loaded ad hoc by a build script.
+    already_loaded = Enum.map(:code.all_loaded(), fn {mod, _} -> mod end)
+
+    (from_app ++ already_loaded)
+    |> Enum.uniq()
     |> Enum.filter(&hw_module?/1)
     |> Enum.sort()
   end
 
   defp hw_module?(module) do
-    function_exported?(module, :__hw_signals__, 0) or
-    function_exported?(module, :__hw_interface_signals__, 0)
+    # ensure_loaded? first: function_exported?/3 answers false for a module that
+    # has not been loaded yet.
+    Code.ensure_loaded?(module) and
+      (function_exported?(module, :__hw_signals__, 0) or
+         function_exported?(module, :__hw_interface_signals__, 0))
   end
 end

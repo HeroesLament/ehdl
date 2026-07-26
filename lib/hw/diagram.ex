@@ -139,7 +139,7 @@ defmodule Hw.Diagram do
 
   defp build_child_output_ports(instances) do
     Enum.reduce(instances, MapSet.new(), fn inst, acc ->
-      if function_exported?(inst.module, :__hw_signals__, 0) do
+      if (Code.ensure_loaded?(inst.module) and function_exported?(inst.module, :__hw_signals__, 0)) do
         inst.module.__hw_signals__()
         |> Enum.filter(&(&1.direction == :output))
         |> Enum.reduce(acc, fn sig, a -> MapSet.put(a, {inst.module, sig.name}) end)
@@ -156,7 +156,7 @@ defmodule Hw.Diagram do
       port in [:rst, :reset, :areset] -> :input
 
       # Check module metadata if available
-      function_exported?(module, :__hw_signals__, 0) ->
+      (Code.ensure_loaded?(module) and function_exported?(module, :__hw_signals__, 0)) ->
         module.__hw_signals__()
         |> Enum.find(&(&1.name == port))
         |> case do
@@ -658,7 +658,7 @@ defmodule Hw.Diagram do
   defp inst_conns(_), do: []
 
   defp safe_call(module, fun, default) do
-    if function_exported?(module, fun, 0), do: apply(module, fun, []), else: default
+    if (Code.ensure_loaded?(module) and function_exported?(module, fun, 0)), do: apply(module, fun, []), else: default
   end
 
   # Fletcher uses <label> syntax for named node references

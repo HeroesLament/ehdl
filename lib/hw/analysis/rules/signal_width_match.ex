@@ -115,7 +115,7 @@ defmodule Hw.Analysis.Rules.SignalWidthMatch do
   end
 
   defp extract_params(component) do
-    if function_exported?(component.module, :__hw_params__, 0) do
+    if (Code.ensure_loaded?(component.module) and function_exported?(component.module, :__hw_params__, 0)) do
       component.module.__hw_params__()
       |> Enum.map(fn p -> {p.name, p.value} end)
       |> Map.new()

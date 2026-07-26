@@ -236,7 +236,7 @@ defmodule Hw.Sim.Backend do
   @doc "Return backend metadata. See `c:metadata/1`."
   @spec metadata({module(), term()}) :: map()
   def metadata({mod, ref}) do
-    if function_exported?(mod, :metadata, 1) do
+    if (Code.ensure_loaded?(mod) and function_exported?(mod, :metadata, 1)) do
       mod.metadata(ref)
     else
       %{backend: mod}

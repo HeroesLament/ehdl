@@ -49,5 +49,23 @@ defmodule Hw.Analysis.Rule do
   """
   @callback priority() :: non_neg_integer()
 
-  @optional_callbacks [priority: 0]
+  @doc """
+  Which representation this rule inspects. Defaults to `:metadata`.
+
+    * `:metadata` — `run/1` receives the collected module metadata,
+      `%{components: [...], interfaces: [...], connections: [...]}`. Most rules
+      are of this kind: they reason about declarations and port maps before
+      elaboration.
+
+    * `:ir` — `run/1` receives an elaborated `Hw.IR.Design`, with `.signals` and
+      `.ops`. Use this when a rule needs the flattened netlist rather than the
+      source-level declarations.
+
+  The two take incompatible arguments, so the stage must be declared rather than
+  inferred. An `:ir` rule that omitted this used to be handed metadata and raise
+  `key :signals not found`, which took the whole suite down with it.
+  """
+  @callback stage() :: :metadata | :ir
+
+  @optional_callbacks [priority: 0, stage: 0]
 end

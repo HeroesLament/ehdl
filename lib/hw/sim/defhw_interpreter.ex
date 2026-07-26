@@ -73,7 +73,7 @@ defmodule Hw.Sim.DefhwInterpreter do
   # ---------------------------------------------------------------------------
 
   defp find_defhw!(module, name, arity) do
-    defhws = if function_exported?(module, :__hw_defhw__, 0) do
+    defhws = if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_defhw__, 0)) do
       module.__hw_defhw__()
     else
       []

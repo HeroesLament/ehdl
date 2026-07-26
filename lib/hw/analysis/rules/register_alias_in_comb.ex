@@ -78,12 +78,18 @@ defmodule Hw.Analysis.Rules.RegisterAliasInComb do
     Enum.flat_map(components, fn comp ->
       case safe_design(comp.module) do
         nil    -> []
-        design -> check_design(design, comp.module)
+        design -> check_design(design, comp.module, comp.instances)
       end
     end)
   end
 
-  defp check_design(design, module) do
+  defp check_design(design, module, instances) do
+    # Names belonging to a flattened child instance. A component's own design
+    # contains its children inlined, so without this every child's assignments
+    # are re-reported once per ancestor — and the child is analysed on its own
+    # anyway, where the diagnostic (if real) belongs.
+    child_prefixes = Enum.map(instances, fn inst -> "#{inst.name}_" end)
+
     reg_outputs =
       design.ops
       |> Enum.filter(&match?(%Reg{}, &1))
@@ -97,6 +103,8 @@ defmodule Hw.Analysis.Rules.RegisterAliasInComb do
 
     design.ops
     |> Enum.filter(&reg_alias?(&1, reg_outputs))
+    |> Enum.reject(&from_child?(&1, child_prefixes))
+    |> Enum.reject(&exposes_on_port?/1)
     |> Enum.map(fn %Assign{output: out, input: %Signal{name: src}} ->
       loc = location_of(out, module)
 
@@ -128,6 +136,21 @@ defmodule Hw.Analysis.Rules.RegisterAliasInComb do
 
   defp reg_alias?(_, _), do: false
 
+  # An assignment that came from a flattened child instance.
+  defp from_child?(%Assign{output: %Signal{name: name}}, prefixes) do
+    str = Atom.to_string(name)
+    Enum.any?(prefixes, &String.starts_with?(str, &1))
+  end
+
+  defp from_child?(_, _), do: false
+
+  # `comb do out = some_reg end` where `out` is an output port is how every
+  # component exposes a registered value at its boundary. A port is the module
+  # edge, not combinational logic that could close a loop, so this is the
+  # idiom rather than a smell.
+  defp exposes_on_port?(%Assign{output: %Signal{direction: :output}}), do: true
+  defp exposes_on_port?(_), do: false
+
   defp compiler_generated?(name) do
     name |> Atom.to_string() |> String.starts_with?("_")
   end
@@ -137,7 +160,7 @@ defmodule Hw.Analysis.Rules.RegisterAliasInComb do
 
   defp safe_design(module) do
     try do
-      if function_exported?(module, :__hw_design__, 0), do: module.__hw_design__()
+      if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_design__, 0)), do: module.__hw_design__()
     rescue
       _ -> nil
     end

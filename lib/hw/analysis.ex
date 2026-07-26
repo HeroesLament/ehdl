@@ -91,10 +91,10 @@ defmodule Hw.Analysis do
   @spec run([module()]) :: result()
   def run(modules) do
     metadata    = collect(modules)
-    diagnostics = run_all_rules(metadata)
+    diagnostics = run_all_rules(metadata) ++ run_ir_rules(modules)
 
     %{
-      diagnostics:     diagnostics,
+      diagnostics:     Enum.uniq(diagnostics),
       interface_graph: build_interface_graph(metadata),
       signal_index:    build_signal_index(metadata)
     }
@@ -109,16 +109,31 @@ defmodule Hw.Analysis do
   Rules are discovered by scanning application modules for those that
   adopt the `Hw.Analysis.Rule` behaviour.
   """
-  def rules do
+  def rules, do: rules(:all)
+
+  @doc """
+  Returns registered rules for one stage (`:metadata`, `:ir`, or `:all`),
+  sorted by priority. See `Hw.Analysis.Rule` for what the stages mean.
+  """
+  def rules(stage) do
     {:ok, mods} = :application.get_key(:ehdl, :modules)
 
     mods
     |> Enum.filter(fn mod ->
-      rule_namespace?(mod) and rule_behaviour?(mod)
+      rule_namespace?(mod) and rule_behaviour?(mod) and
+        (stage == :all or rule_stage(mod) == stage)
     end)
     |> Enum.sort_by(fn mod ->
-      if function_exported?(mod, :priority, 0), do: mod.priority(), else: 50
+      if (Code.ensure_loaded?(mod) and function_exported?(mod, :priority, 0)), do: mod.priority(), else: 50
     end)
+  end
+
+  defp rule_stage(mod) do
+    if (Code.ensure_loaded?(mod) and function_exported?(mod, :stage, 0)) do
+      mod.stage()
+    else
+      :metadata
+    end
   end
 
   defp rule_namespace?(mod) do
@@ -138,11 +153,61 @@ defmodule Hw.Analysis do
   end
 
   defp run_all_rules(metadata) do
-    rules()
+    rules(:metadata)
     |> Enum.reduce([], fn rule, acc ->
-      acc ++ rule.run(metadata)
+      acc ++ safe_run(rule, metadata)
     end)
     |> Diagnostic.sort()
+  end
+
+  # IR-stage rules need a flattened netlist, so each component is elaborated on
+  # its own and handed to them. A component that cannot stand alone (it expects
+  # a parent to drive its inputs) simply raises during elaboration and is
+  # skipped — that is a property of the component, not a rule failure, so it is
+  # not reported.
+  defp run_ir_rules(modules) do
+    case rules(:ir) do
+      [] ->
+        []
+
+      ir_rules ->
+        modules
+        |> Enum.flat_map(fn mod ->
+          case safe_elaborate(mod) do
+            {:ok, design} -> Enum.flat_map(ir_rules, &safe_run(&1, design))
+            :error -> []
+          end
+        end)
+        |> Diagnostic.sort()
+    end
+  end
+
+  defp safe_elaborate(module) do
+    {:ok, Hw.Compile.Elaborate.elaborate(module)}
+  rescue
+    _ -> :error
+  catch
+    _, _ -> :error
+  end
+
+  # A rule that raises must not take the whole suite down with it.
+  #
+  # Module discovery in `mix hw.check` used to return nothing, so the suite
+  # never actually ran and a rule could rot unnoticed. Isolating failures means
+  # one stale rule costs that rule's coverage and nothing else, and reports
+  # itself instead of aborting the run.
+  defp safe_run(rule, metadata) do
+    rule.run(metadata)
+  rescue
+    e ->
+      [
+        Diagnostic.error(
+          :analysis_rule_crashed,
+          "analysis rule #{inspect(rule)} raised: " <> Exception.message(e),
+          %Hw.Analysis.Location{file: "unknown", line: 0, module: rule},
+          context: %{rule: rule, exception: Exception.message(e)}
+        )
+      ]
   end
 
   # ---------------------------------------------------------------------------
@@ -152,7 +217,7 @@ defmodule Hw.Analysis do
   defp collect(modules) do
     {components, interfaces} =
       Enum.split_with(modules, fn mod ->
-        function_exported?(mod, :__hw_signals__, 0)
+        (Code.ensure_loaded?(mod) and function_exported?(mod, :__hw_signals__, 0))
       end)
 
     %{
@@ -163,29 +228,54 @@ defmodule Hw.Analysis do
   end
 
   defp collect_component(module) do
-    signals = if function_exported?(module, :__hw_signals__, 0),
+    signals = if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_signals__, 0)),
       do: module.__hw_signals__(), else: []
 
-    clocks = if function_exported?(module, :__hw_clocks__, 0),
+    clocks = if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_clocks__, 0)),
       do: module.__hw_clocks__(), else: []
 
-    instances = if function_exported?(module, :__hw_instances__, 0),
+    instances = if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_instances__, 0)),
       do: module.__hw_instances__(), else: []
 
-    interfaces = if function_exported?(module, :__hw_interface_bindings__, 0),
+    interfaces = if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_interface_bindings__, 0)),
       do: module.__hw_interface_bindings__(), else: []
+
+    # Logic, FSMs and tristates are part of a component's definition and rules
+    # need them to answer "what drives this?". Without them a rule can only see
+    # instance port maps, so every signal driven by a `comb` or `on :clk` block
+    # looks undriven.
+    logic = optional(module, :__hw_logic__)
+    fsms = optional(module, :__hw_fsm__)
+    tristates = optional(module, :__hw_tristates__)
+    blackboxes = optional(module, :__hw_blackboxes__)
 
     %{
       module:     module,
       signals:    signals,
       clocks:     clocks,
       instances:  instances,
-      interfaces: interfaces
+      interfaces: interfaces,
+      logic:      logic,
+      fsms:       fsms,
+      tristates:  tristates,
+      blackboxes: blackboxes
     }
   end
 
+  defp optional(module, fun) do
+    if Code.ensure_loaded?(module) and function_exported?(module, fun, 0) do
+      case apply(module, fun, []) do
+        list when is_list(list) -> list
+        nil -> []
+        other -> [other]
+      end
+    else
+      []
+    end
+  end
+
   defp collect_interface(module) do
-    signals = if function_exported?(module, :__hw_interface_signals__, 0),
+    signals = if (Code.ensure_loaded?(module) and function_exported?(module, :__hw_interface_signals__, 0)),
       do: module.__hw_interface_signals__(), else: []
 
     %{module: module, signals: signals}
@@ -193,7 +283,7 @@ defmodule Hw.Analysis do
 
   defp collect_connections(component_modules) do
     Enum.flat_map(component_modules, fn mod ->
-      if function_exported?(mod, :__hw_connections__, 0) do
+      if (Code.ensure_loaded?(mod) and function_exported?(mod, :__hw_connections__, 0)) do
         mod.__hw_connections__()
       else
         []
