@@ -68,12 +68,12 @@ defmodule Hw.UART.TX do
     bit_cnt   = bit_cnt + 1
   end
 
-  fsm :tx_state, clock: :clk, reset: :rst, init: :idle do
+  fsm :uart_state, clock: :clk, reset: :rst, init: :idle do
     defaults do
       ready = 1
     end
 
-    case tx_state do
+    case uart_state do
       :idle ->
         ready = 1
         on valid do
@@ -99,9 +99,9 @@ defmodule Hw.UART.TX do
   defhw _send(tx_byte) do
     valid = 1
     data  = tx_byte
-    on tx_state == 1 do   # wait for FSM to latch the byte and start sending
+    on uart_state == 1 do   # wait for FSM to latch the byte and start sending
     end
-    on tx_state == 0 do   # wait for the full 10-bit frame to complete
+    on uart_state == 0 do   # wait for the full 10-bit frame to complete
     end
   end
 end
