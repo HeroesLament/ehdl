@@ -111,7 +111,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
     target_sig = Map.get(signal_map, target_name)
     width  = if target_sig, do: target_sig.width,  else: 1
     signed = if target_sig, do: target_sig.signed, else: :unsigned
-    tmp_name = :"_default_#{target_name}_#{:erlang.unique_integer([:positive])}"
+    tmp_name = :"_default_#{target_name}_#{Hw.Compile.Elaborate.Gensym.next()}"
     tmp_sig  = %Signal{name: tmp_name, width: width, signed: signed, direction: :internal}
     d1 = Design.add_signal(design, tmp_sig)
     d2 = Design.add_op(d1, %Hw.IR.Ops.Assign{output: tmp_sig, input: expr})
@@ -173,11 +173,11 @@ defmodule Hw.Compile.Elaborate.Sequential do
 
         %{type: :case, expr: case_expr, clauses: clauses} ->
           # STRUCTURAL INTEGRITY: reject duplicate exact-match selector arms.
-          # Case arms lower to a last-wins if-chain (see build_case_mux). Two
+          # Case arms lower to a first-match-wins chain (see build_case_mux). Two
           # fully-literal patterns that select the SAME subject value (e.g.
           # `<<5::8>>` twice in a char_at/ROM template, or two dashboard columns
-          # emitted under one index) are not both reachable: the later arm
-          # silently shadows the earlier, so the earlier body is dead code. Same
+          # emitted under one index) are not both reachable: the earlier arm
+          # silently shadows the later, so the later body is dead code. Same
           # silent-wrong-hardware class as the wildcard-clobber (legal Verilog,
           # wrong behaviour) — refuse it at elaboration instead of shipping it to
           # silicon. Wildcard/capture catch-alls are handled separately below;
@@ -188,7 +188,10 @@ defmodule Hw.Compile.Elaborate.Sequential do
           # Materialize before branching into clauses. Skip in comb mode.
           {mat_val, d3} = if comb, do: {nil, d2}, else: materialize(current_value, d2, signal_map, target_name)
 
-          {case_arms, default_value, d4} = Enum.reduce(clauses, {[], nil, d3}, fn clause, {arms, default_val, acc_d} ->
+          check_catch_all_arms!(clauses)
+          last_index = length(clauses) - 1
+
+          {case_arms, default_value, d4} = Enum.reduce(Enum.with_index(clauses), {[], nil, d3}, fn {clause, index}, {arms, default_val, acc_d} ->
             %{pattern: pattern, body: body} = clause
             resolved_body = resolve_captures(body, case_val)
 
@@ -204,39 +207,25 @@ defmodule Hw.Compile.Elaborate.Sequential do
                 {arms, body_value, body_d}
 
               # An all-wildcard/capture binary pattern (`<<_::8, _::8>>`,
-              # `<<x::8, _::8>>`, `<<_::16>>`) matches EVERY subject — it IS the
-              # default clause. Route it to `default_val`, NOT to a regular arm.
+              # `<<x::8, _::8>>`, `<<_::16>>`) matches EVERY subject. As the
+              # LAST clause that is exactly the default, so route it to
+              # `default_val` — one fewer always-true comparison in the emitted
+              # mux, and the casez form gets a real `default:` arm.
               #
-              # If it were built as an ordinary arm its match signal is a constant
-              # 1 (see build_binary_match), and because case arms lower to a
-              # last-wins if-chain, a trailing always-true arm CLOBBERS every
-              # specific arm above it back to the hold value. That silently pinned
-              # the whole USB CDC dispatch (ep0_state/ep_in_loaded/dev_state) —
-              # proven on silicon. A catch-all is a default, so treat it as one.
-              {:binary_pattern, segments, _total_width} when default_val == nil ->
-                if all_wildcard_pattern?(segments) do
+              # A catch-all in any EARLIER position is an ordinary arm. Under
+              # first-match-wins it shadows everything below it, which is what
+              # Elixir `case` means and what the arm order says. It used to be
+              # rerouted here too, which quietly inverted the author's priority:
+              # the specific arms below won instead. (Rerouting was a workaround
+              # for a last-match-wins Verilog lowering; see emit_mux_always.)
+              {:binary_pattern, segments, total_width} ->
+                if all_wildcard_pattern?(segments) and index == last_index and default_val == nil do
                   {arms, body_value, body_d}
                 else
-                  {match_sig, match_d} = build_binary_match(case_val, segments, _total_width, body_d)
-                  pat = segments_to_pattern(segments, _total_width)
+                  {match_sig, match_d} = build_binary_match(case_val, segments, total_width, body_d)
+                  pat = segments_to_pattern(segments, total_width)
                   {arms ++ [{match_sig, body_value, pat}], default_val, match_d}
                 end
-
-              {:binary_pattern, segments, total_width} ->
-                # A default already exists; a further all-wildcard arm would be
-                # unreachable AND clobbering — refuse it loudly rather than emit
-                # silently-wrong hardware.
-                if all_wildcard_pattern?(segments) do
-                  raise Hw.Compile.Elaborate.ElabError,
-                    message: "hdl_case has more than one catch-all/wildcard arm " <>
-                             "(a second `<<_::N>>`-style pattern). A catch-all is " <>
-                             "the default clause; there can be only one. Remove the " <>
-                             "extra wildcard arm.",
-                    context: segments
-                end
-                {match_sig, match_d} = build_binary_match(case_val, segments, total_width, body_d)
-                pat = segments_to_pattern(segments, total_width)
-                {arms ++ [{match_sig, body_value, pat}], default_val, match_d}
 
               _ ->
                 {pattern_value, pattern_d} = Expr.build_expr(pattern, signal_map, instance_map, memory_map, body_d)
@@ -274,8 +263,36 @@ defmodule Hw.Compile.Elaborate.Sequential do
   # True when a binary-pattern clause has NO literal segments — i.e. every segment
   # is a wildcard (`_::N`) or a capture (`name::N`). Such a pattern matches every
   # possible subject, so it is a catch-all / default clause, not a conditional arm.
-  # (`build_binary_match` would otherwise turn it into an always-true match signal,
-  # which clobbers sibling arms under last-wins lowering.)
+  # As the final clause it is routed to the mux default rather than built as an
+  # always-true match signal, which is one comparison cheaper and identical in
+  # behaviour under first-match-wins lowering.
+  # STRUCTURAL INTEGRITY CHECK — more than one catch-all.
+  #
+  # A catch-all matches every subject, so a second one can never be reached: its
+  # body is dead code no matter where it sits. Same class as duplicate literal
+  # arms — the author meant something else. Raise instead of silently dropping a
+  # clause. (A single catch-all in a non-final position is legal: it shadows the
+  # arms below it, which is ordinary first-match-wins priority.)
+  defp check_catch_all_arms!(clauses) do
+    count =
+      Enum.count(clauses, fn
+        %{pattern: :default} -> true
+        %{pattern: {:binary_pattern, segments, _}} -> all_wildcard_pattern?(segments)
+        _ -> false
+      end)
+
+    if count > 1 do
+      raise Hw.Compile.Elaborate.ElabError,
+        message: "hdl_case has more than one catch-all/wildcard arm " <>
+                 "(a second `<<_::N>>`-style pattern, or a wildcard alongside a " <>
+                 "default). Only the first can ever match; the rest are dead " <>
+                 "code. Remove the extra catch-all arm.",
+        context: clauses
+    end
+
+    :ok
+  end
+
   defp all_wildcard_pattern?(segments) do
     Enum.all?(segments, fn seg -> Map.get(seg, :type) != :literal end)
   end
@@ -284,14 +301,14 @@ defmodule Hw.Compile.Elaborate.Sequential do
   #
   # An arm whose binary pattern is entirely literal segments (no wildcard, no
   # capture) matches exactly ONE subject value. Two such arms with the same value
-  # cannot both be live: case arms lower to a last-wins if-chain, so the second
-  # occurrence unconditionally shadows the first. The author almost certainly
+  # cannot both be live: case arms lower to a first-match-wins chain, so the
+  # first occurrence unconditionally shadows the second. The author almost certainly
   # meant two distinct selectors (a mistyped ROM index, a copy-pasted dashboard
   # column) — shipping it emits legal Verilog that silently drops the first arm's
   # body. Raise instead.
   #
   # Only exact-literal patterns are checked. Wildcard/capture arms are catch-alls
-  # (handled by all_wildcard_pattern?/the default routing) and partially-literal
+  # (handled by check_catch_all_arms!/1) and partially-literal
   # patterns (`<<0x80::8, _::8>>`) match ranges, whose overlap is a legitimate
   # priority-ordering choice, not a guaranteed dead arm.
   defp check_duplicate_literal_arms!(clauses) do
@@ -453,7 +470,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
     case check_exprs do
       [] ->
         # All wildcards — always matches — build a constant 1
-        result_name = :"_bpmatch_#{:erlang.unique_integer([:positive])}"
+        result_name = :"_bpmatch_#{Hw.Compile.Elaborate.Gensym.next()}"
         result_sig = %Signal{name: result_name, width: 1, signed: :unsigned, direction: :internal}
         d1 = Design.add_signal(design, result_sig)
         const_one = %Const{value: 1, width: 1, signed: :unsigned}
@@ -464,7 +481,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
         # Build AND-chain of slice equality checks
         Enum.reduce(checks, {nil, design}, fn {:slice_eq, subj, hi, lo, val, w}, {acc_sig, acc_d} ->
           # Extract slice
-          slice_name = :"_bpslice_#{:erlang.unique_integer([:positive])}"
+          slice_name = :"_bpslice_#{Hw.Compile.Elaborate.Gensym.next()}"
           slice_sig = %Signal{name: slice_name, width: hi - lo + 1, signed: :unsigned, direction: :internal}
           hi_const = %Const{value: hi, width: 32, signed: :unsigned}
           lo_const = %Const{value: lo, width: 32, signed: :unsigned}
@@ -473,7 +490,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
 
           # Equality check
           val_const = %Const{value: val, width: w, signed: :unsigned}
-          eq_name = :"_bpeq_#{:erlang.unique_integer([:positive])}"
+          eq_name = :"_bpeq_#{Hw.Compile.Elaborate.Gensym.next()}"
           eq_sig = %Signal{name: eq_name, width: 1, signed: :unsigned, direction: :internal}
           acc_d3 = Design.add_signal(acc_d2, eq_sig)
           acc_d4 = Design.add_op(acc_d3, %Ops.Eq{output: eq_sig, a: slice_sig, b: val_const})
@@ -483,7 +500,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
             nil ->
               {eq_sig, acc_d4}
             prev ->
-              and_name = :"_bpand_#{:erlang.unique_integer([:positive])}"
+              and_name = :"_bpand_#{Hw.Compile.Elaborate.Gensym.next()}"
               and_sig = %Signal{name: and_name, width: 1, signed: :unsigned, direction: :internal}
               acc_d5 = Design.add_signal(acc_d4, and_sig)
               acc_d6 = Design.add_op(acc_d5, %Ops.BitAnd{output: and_sig, a: prev, b: eq_sig})
@@ -496,7 +513,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
   defp build_mux_op(condition, then_value, else_value, design) do
     {then_val, else_val} = Expr.match_const_widths(then_value, else_value)
 
-    result_name = :"_mux_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_mux_#{Hw.Compile.Elaborate.Gensym.next()}"
     # Max-width across both arms (see infer_result_width_signed) so neither arm
     # is silently truncated; narrower arm zero-extended via extend_arm.
     {width, signed} = infer_result_width_signed([then_val, else_val])
@@ -554,7 +571,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
     {%Const{c | width: width, signed: signed}, design}
   end
   defp extend_arm(%Signal{width: w} = s, width, _signed, design) when w < width do
-    name = :"_zext_arm_#{:erlang.unique_integer([:positive])}"
+    name = :"_zext_arm_#{Hw.Compile.Elaborate.Gensym.next()}"
     sig = %Signal{name: name, width: width, signed: :unsigned, direction: :internal}
     d1 = Design.add_signal(design, sig)
     d2 = Design.add_op(d1, %Ops.ZeroExtend{output: sig, input: s, width: width})
@@ -566,7 +583,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
     all_vals = Enum.map(case_arms, &elem(&1, 1)) ++ [default_val]
     {width, signed} = infer_result_width_signed(all_vals)
 
-    result_name = :"_case_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_case_#{Hw.Compile.Elaborate.Gensym.next()}"
 
     result_sig = %Signal{name: result_name, width: width, signed: signed, direction: :internal}
 
@@ -579,7 +596,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
       cond_sig = case pattern_or_cond do
         %Signal{width: 1} = sig -> {sig, acc_d}
         other ->
-          cmp_name = :"_eq_#{:erlang.unique_integer([:positive])}"
+          cmp_name = :"_eq_#{Hw.Compile.Elaborate.Gensym.next()}"
           cmp_sig = %Signal{name: cmp_name, width: 1, signed: :unsigned, direction: :internal}
           acc_d2 = Design.add_signal(acc_d, cmp_sig)
           eq_op = %Ops.Eq{output: cmp_sig, a: case_expr, b: other}

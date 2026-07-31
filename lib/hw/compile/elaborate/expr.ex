@@ -95,7 +95,7 @@ defmodule Hw.Compile.Elaborate.Expr do
             end
         end
 
-        result_name = :"_memrd_#{:erlang.unique_integer([:positive])}"
+        result_name = :"_memrd_#{Hw.Compile.Elaborate.Gensym.next()}"
         result_sig = %Signal{name: result_name, width: mem.width, signed: :unsigned, direction: :internal}
         d2 = Design.add_signal(d1, result_sig)
 
@@ -124,7 +124,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
     {a_val, b_val} = match_const_widths(a_val, b_val)
 
-    result_name = :"_add_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_add_#{Hw.Compile.Elaborate.Gensym.next()}"
     width = infer_width(a_val, b_val)
     signed = infer_signedness(a_val, b_val)
     # Both operands must be the result width (the validator requires equal-width
@@ -149,7 +149,7 @@ defmodule Hw.Compile.Elaborate.Expr do
         {%Const{value: av - bv, width: 32, signed: :unsigned}, d2}
       _ ->
         {a_val, b_val} = match_const_widths(a_val, b_val)
-        result_name = :"_sub_#{:erlang.unique_integer([:positive])}"
+        result_name = :"_sub_#{Hw.Compile.Elaborate.Gensym.next()}"
         width = infer_width(a_val, b_val)
         signed = infer_signedness(a_val, b_val)
         {a_val, d2a} = align_to_width(a_val, width, d2)
@@ -170,7 +170,7 @@ defmodule Hw.Compile.Elaborate.Expr do
         {%Const{value: av * bv, width: 32, signed: :unsigned}, d2}
       _ ->
         {a_val, b_val} = match_const_widths(a_val, b_val)
-        result_name = :"_mul_#{:erlang.unique_integer([:positive])}"
+        result_name = :"_mul_#{Hw.Compile.Elaborate.Gensym.next()}"
         width = infer_width(a_val, b_val)
         signed = infer_signedness(a_val, b_val)
         result_sig = %Signal{name: result_name, width: width, signed: signed, direction: :internal}
@@ -186,7 +186,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
 
-    result_name = :"_band_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_band_#{Hw.Compile.Elaborate.Gensym.next()}"
     width = infer_width(a_val, b_val)
 
     result_sig = %Signal{name: result_name, width: width, signed: :unsigned, direction: :internal}
@@ -200,7 +200,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
 
-    result_name = :"_bor_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_bor_#{Hw.Compile.Elaborate.Gensym.next()}"
     width = infer_width(a_val, b_val)
 
     result_sig = %Signal{name: result_name, width: width, signed: :unsigned, direction: :internal}
@@ -213,7 +213,7 @@ defmodule Hw.Compile.Elaborate.Expr do
   def build_expr({:bnot, a}, signal_map, instance_map, memory_map, design) do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
 
-    result_name = :"_bnot_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_bnot_#{Hw.Compile.Elaborate.Gensym.next()}"
     width = case a_val do
       %Signal{width: w} -> w
       %Const{width: w} -> w
@@ -230,7 +230,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
 
-    result_name = :"_xor_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_xor_#{Hw.Compile.Elaborate.Gensym.next()}"
     width = infer_width(a_val, b_val)
 
     result_sig = %Signal{name: result_name, width: width, signed: :unsigned, direction: :internal}
@@ -244,7 +244,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
 
-    result_name = :"_shl_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_shl_#{Hw.Compile.Elaborate.Gensym.next()}"
     width = infer_width(a_val, b_val)
 
     result_sig = %Signal{name: result_name, width: width, signed: :unsigned, direction: :internal}
@@ -258,7 +258,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
 
-    result_name = :"_shr_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_shr_#{Hw.Compile.Elaborate.Gensym.next()}"
     width = infer_width(a_val, b_val)
     signed = infer_signedness(a_val, b_val)
 
@@ -274,7 +274,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
 
-    result_name = :"_shra_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_shra_#{Hw.Compile.Elaborate.Gensym.next()}"
     width = infer_width(a_val, b_val)
 
     result_sig = %Signal{name: result_name, width: width, signed: :signed, direction: :internal}
@@ -290,7 +290,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
 
-    result_name = :"_eq_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_eq_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: 1, signed: :unsigned, direction: :internal}
     d3 = Design.add_signal(d2, result_sig)
     d4 = Design.add_op(d3, %Ops.Eq{output: result_sig, a: a_val, b: b_val})
@@ -302,7 +302,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
 
-    result_name = :"_neq_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_neq_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: 1, signed: :unsigned, direction: :internal}
     d3 = Design.add_signal(d2, result_sig)
     d4 = Design.add_op(d3, %Ops.Neq{output: result_sig, a: a_val, b: b_val})
@@ -314,7 +314,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
 
-    result_name = :"_lt_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_lt_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: 1, signed: :unsigned, direction: :internal}
     d3 = Design.add_signal(d2, result_sig)
     d4 = Design.add_op(d3, %Ops.Lt{output: result_sig, a: a_val, b: b_val})
@@ -326,7 +326,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
 
-    result_name = :"_gt_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_gt_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: 1, signed: :unsigned, direction: :internal}
     d3 = Design.add_signal(d2, result_sig)
     d4 = Design.add_op(d3, %Ops.Gt{output: result_sig, a: a_val, b: b_val})
@@ -338,7 +338,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
 
-    result_name = :"_lte_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_lte_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: 1, signed: :unsigned, direction: :internal}
     d3 = Design.add_signal(d2, result_sig)
     d4 = Design.add_op(d3, %Ops.Lte{output: result_sig, a: a_val, b: b_val})
@@ -350,7 +350,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
 
-    result_name = :"_gte_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_gte_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: 1, signed: :unsigned, direction: :internal}
     d3 = Design.add_signal(d2, result_sig)
     d4 = Design.add_op(d3, %Ops.Gte{output: result_sig, a: a_val, b: b_val})
@@ -364,7 +364,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
 
-    result_name = :"_land_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_land_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: 1, signed: :unsigned, direction: :internal}
     d3 = Design.add_signal(d2, result_sig)
     d4 = Design.add_op(d3, %Ops.BitAnd{output: result_sig, a: a_val, b: b_val})
@@ -376,7 +376,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
 
-    result_name = :"_lor_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_lor_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: 1, signed: :unsigned, direction: :internal}
     d3 = Design.add_signal(d2, result_sig)
     d4 = Design.add_op(d3, %Ops.BitOr{output: result_sig, a: a_val, b: b_val})
@@ -387,7 +387,7 @@ defmodule Hw.Compile.Elaborate.Expr do
   def build_expr({:lnot, a}, signal_map, instance_map, memory_map, design) do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
 
-    result_name = :"_lnot_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_lnot_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: 1, signed: :unsigned, direction: :internal}
     d2 = Design.add_signal(d1, result_sig)
     d3 = Design.add_op(d2, %Ops.BitNot{output: result_sig, input: a_val})
@@ -407,7 +407,7 @@ defmodule Hw.Compile.Elaborate.Expr do
       _ -> 8  # Fallback for dynamic slices
     end
 
-    result_name = :"_slice_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_slice_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: width, signed: :unsigned, direction: :internal}
     d4 = Design.add_signal(d3, result_sig)
     d5 = Design.add_op(d4, %Ops.Slice{output: result_sig, input: base_val, hi: hi_val, lo: lo_val})
@@ -427,7 +427,7 @@ defmodule Hw.Compile.Elaborate.Expr do
       %Const{width: w}, acc -> acc + w
     end)
 
-    result_name = :"_cat_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_cat_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: width, signed: :unsigned, direction: :internal}
     d2 = Design.add_signal(d1, result_sig)
     d3 = Design.add_op(d2, %Ops.Concat{output: result_sig, inputs: vals})
@@ -440,7 +440,7 @@ defmodule Hw.Compile.Elaborate.Expr do
   def build_expr({:neg, a}, signal_map, instance_map, memory_map, design) do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
 
-    result_name = :"_neg_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_neg_#{Hw.Compile.Elaborate.Gensym.next()}"
     width = case a_val do
       %Signal{width: w} -> w
       %Const{width: w} -> w
@@ -462,7 +462,7 @@ defmodule Hw.Compile.Elaborate.Expr do
         {%Const{value: div(av, bv), width: 32, signed: :unsigned}, d2}
       _ ->
         {a_val, b_val} = match_const_widths(a_val, b_val)
-        result_name = :"_div_#{:erlang.unique_integer([:positive])}"
+        result_name = :"_div_#{Hw.Compile.Elaborate.Gensym.next()}"
         width = infer_width(a_val, b_val)
         signed = infer_signedness(a_val, b_val)
         result_sig = %Signal{name: result_name, width: width, signed: signed, direction: :internal}
@@ -477,7 +477,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
     {a_val, b_val} = match_const_widths(a_val, b_val)
 
-    result_name = :"_mod_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_mod_#{Hw.Compile.Elaborate.Gensym.next()}"
     width = infer_width(a_val, b_val)
     signed = infer_signedness(a_val, b_val)
 
@@ -493,7 +493,7 @@ defmodule Hw.Compile.Elaborate.Expr do
   def build_expr({:reduce_and, a}, signal_map, instance_map, memory_map, design) do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
 
-    result_name = :"_rand_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_rand_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: 1, signed: :unsigned, direction: :internal}
     d2 = Design.add_signal(d1, result_sig)
     d3 = Design.add_op(d2, %Ops.ReduceAnd{output: result_sig, input: a_val})
@@ -504,7 +504,7 @@ defmodule Hw.Compile.Elaborate.Expr do
   def build_expr({:reduce_or, a}, signal_map, instance_map, memory_map, design) do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
 
-    result_name = :"_ror_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_ror_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: 1, signed: :unsigned, direction: :internal}
     d2 = Design.add_signal(d1, result_sig)
     d3 = Design.add_op(d2, %Ops.ReduceOr{output: result_sig, input: a_val})
@@ -515,7 +515,7 @@ defmodule Hw.Compile.Elaborate.Expr do
   def build_expr({:reduce_xor, a}, signal_map, instance_map, memory_map, design) do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
 
-    result_name = :"_rxor_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_rxor_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: 1, signed: :unsigned, direction: :internal}
     d2 = Design.add_signal(d1, result_sig)
     d3 = Design.add_op(d2, %Ops.ReduceXor{output: result_sig, input: a_val})
@@ -537,7 +537,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     # E.g., 8-bit input can have 0-8 ones, needs 4 bits
     output_width = if input_width <= 1, do: 1, else: ceil(:math.log2(input_width + 1)) |> trunc()
 
-    result_name = :"_popc_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_popc_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: output_width, signed: :unsigned, direction: :internal}
     d2 = Design.add_signal(d1, result_sig)
     d3 = Design.add_op(d2, %Ops.Popcount{output: result_sig, input: a_val})
@@ -550,7 +550,7 @@ defmodule Hw.Compile.Elaborate.Expr do
   def build_expr({:sign_extend, a, target_width}, signal_map, instance_map, memory_map, design) do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
 
-    result_name = :"_sext_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_sext_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: target_width, signed: :signed, direction: :internal}
     d2 = Design.add_signal(d1, result_sig)
     d3 = Design.add_op(d2, %Ops.SignExtend{output: result_sig, input: a_val, width: target_width})
@@ -563,7 +563,7 @@ defmodule Hw.Compile.Elaborate.Expr do
   def build_expr({:zero_extend, a, target_width}, signal_map, instance_map, memory_map, design) do
     {a_val, d1} = build_expr(a, signal_map, instance_map, memory_map, design)
 
-    result_name = :"_zext_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_zext_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: target_width, signed: :unsigned, direction: :internal}
     d2 = Design.add_signal(d1, result_sig)
     d3 = Design.add_op(d2, %Ops.ZeroExtend{output: result_sig, input: a_val, width: target_width})
@@ -581,7 +581,7 @@ defmodule Hw.Compile.Elaborate.Expr do
       %Const{width: w} -> w
     end
 
-    result_name = :"_rev_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_rev_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: width, signed: :unsigned, direction: :internal}
     d2 = Design.add_signal(d1, result_sig)
     d3 = Design.add_op(d2, %Ops.ReverseBits{output: result_sig, input: a_val})
@@ -599,7 +599,7 @@ defmodule Hw.Compile.Elaborate.Expr do
       %Const{width: w} -> w
     end
 
-    result_name = :"_abs_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_abs_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: width, signed: :unsigned, direction: :internal}
     d2 = Design.add_signal(d1, result_sig)
     d3 = Design.add_op(d2, %Ops.Abs{output: result_sig, input: a_val})
@@ -620,7 +620,7 @@ defmodule Hw.Compile.Elaborate.Expr do
 
       %ParamRef{} ->
         # Parameter - emit $clog2() for runtime evaluation
-        result_name = :"_clog2_#{:erlang.unique_integer([:positive])}"
+        result_name = :"_clog2_#{Hw.Compile.Elaborate.Gensym.next()}"
         result_sig = %Signal{name: result_name, width: 32, signed: :unsigned, direction: :internal}
         d2 = Design.add_signal(d1, result_sig)
         d3 = Design.add_op(d2, %Hw.IR.Ops.Clog2{output: result_sig, input: a_val})
@@ -642,7 +642,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     width = infer_width(a_val, b_val)
     signed = infer_signedness(a_val, b_val)
 
-    result_name = :"_min_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_min_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: width, signed: signed, direction: :internal}
     d3 = Design.add_signal(d2, result_sig)
     d4 = Design.add_op(d3, %Ops.Min{output: result_sig, a: a_val, b: b_val})
@@ -657,7 +657,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     width = infer_width(a_val, b_val)
     signed = infer_signedness(a_val, b_val)
 
-    result_name = :"_max_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_max_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: width, signed: signed, direction: :internal}
     d3 = Design.add_signal(d2, result_sig)
     d4 = Design.add_op(d3, %Ops.Max{output: result_sig, a: a_val, b: b_val})
@@ -685,7 +685,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     result_width = product_width - shift
     signed = infer_signedness(a_val, b_val)
 
-    result_name = :"_mulr_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_mulr_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: result_width, signed: signed, direction: :internal}
     d3 = Design.add_signal(d2, result_sig)
     d4 = Design.add_op(d3, %Hw.IR.Ops.MulRound{output: result_sig, a: a_val, b: b_val, shift: shift})
@@ -706,8 +706,8 @@ defmodule Hw.Compile.Elaborate.Expr do
     width = a_re.width
 
     # Result signals
-    result_re_name = :"_cmul_re_#{:erlang.unique_integer([:positive])}"
-    result_im_name = :"_cmul_im_#{:erlang.unique_integer([:positive])}"
+    result_re_name = :"_cmul_re_#{Hw.Compile.Elaborate.Gensym.next()}"
+    result_im_name = :"_cmul_im_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_re = %Signal{name: result_re_name, width: width, signed: :signed, direction: :internal}
     result_im = %Signal{name: result_im_name, width: width, signed: :signed, direction: :internal}
 
@@ -731,8 +731,8 @@ defmodule Hw.Compile.Elaborate.Expr do
 
     width = a_re.width
 
-    result_re_name = :"_cadd_re_#{:erlang.unique_integer([:positive])}"
-    result_im_name = :"_cadd_im_#{:erlang.unique_integer([:positive])}"
+    result_re_name = :"_cadd_re_#{Hw.Compile.Elaborate.Gensym.next()}"
+    result_im_name = :"_cadd_im_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_re = %Signal{name: result_re_name, width: width, signed: :signed, direction: :internal}
     result_im = %Signal{name: result_im_name, width: width, signed: :signed, direction: :internal}
 
@@ -755,8 +755,8 @@ defmodule Hw.Compile.Elaborate.Expr do
 
     width = a_re.width
 
-    result_re_name = :"_csub_re_#{:erlang.unique_integer([:positive])}"
-    result_im_name = :"_csub_im_#{:erlang.unique_integer([:positive])}"
+    result_re_name = :"_csub_re_#{Hw.Compile.Elaborate.Gensym.next()}"
+    result_im_name = :"_csub_im_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_re = %Signal{name: result_re_name, width: width, signed: :signed, direction: :internal}
     result_im = %Signal{name: result_im_name, width: width, signed: :signed, direction: :internal}
 
@@ -778,7 +778,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     # Magnitude squared is wider: 2*width + 1 for sum of squares
     width = a_re.width * 2 + 1
 
-    result_name = :"_cmagsq_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_cmagsq_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: width, signed: :unsigned, direction: :internal}
 
     d1 = Design.add_signal(design, result_sig)
@@ -793,8 +793,8 @@ defmodule Hw.Compile.Elaborate.Expr do
 
     width = a_re.width
 
-    result_re_name = :"_cconj_re_#{:erlang.unique_integer([:positive])}"
-    result_im_name = :"_cconj_im_#{:erlang.unique_integer([:positive])}"
+    result_re_name = :"_cconj_re_#{Hw.Compile.Elaborate.Gensym.next()}"
+    result_im_name = :"_cconj_im_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_re = %Signal{name: result_re_name, width: width, signed: :signed, direction: :internal}
     result_im = %Signal{name: result_im_name, width: width, signed: :signed, direction: :internal}
 
@@ -818,7 +818,7 @@ defmodule Hw.Compile.Elaborate.Expr do
       %Const{width: w} -> w
     end
 
-    result_name = :"_rep_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_rep_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: input_width * count, signed: :unsigned, direction: :internal}
     d2 = Design.add_signal(d1, result_sig)
     d3 = Design.add_op(d2, %Ops.Replicate{output: result_sig, input: a_val, count: count})
@@ -842,7 +842,7 @@ defmodule Hw.Compile.Elaborate.Expr do
     {then_result, d3a} = align_to_width(then_result, width, d3)
     {else_result, d3b} = align_to_width(else_result, width, d3a)
 
-    result_name = :"_mux_#{:erlang.unique_integer([:positive])}"
+    result_name = :"_mux_#{Hw.Compile.Elaborate.Gensym.next()}"
     result_sig = %Signal{name: result_name, width: width, signed: signed, direction: :internal}
     d4 = Design.add_signal(d3b, result_sig)
 
@@ -861,7 +861,7 @@ defmodule Hw.Compile.Elaborate.Expr do
   # or above `width` pass through. Keeps arithmetic operands equal-width without
   # silent truncation, in dialect-neutral Verilog.
   def align_to_width(%Signal{width: w} = s, width, design) when w < width do
-    name = :"_zext_#{:erlang.unique_integer([:positive])}"
+    name = :"_zext_#{Hw.Compile.Elaborate.Gensym.next()}"
     sig = %Signal{name: name, width: width, signed: :unsigned, direction: :internal}
     d1 = Design.add_signal(design, sig)
     d2 = Design.add_op(d1, %Ops.ZeroExtend{output: sig, input: s, width: width})

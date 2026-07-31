@@ -26,6 +26,11 @@ defmodule Hw.Compile.Elaborate do
   Elaborate a component module into IR.
   """
   def elaborate(module) when is_atom(module) do
+    # Generated signal names must restart from zero for every elaboration, or
+    # the same design emits different Verilog on each run and no seed is
+    # reproducible. See Hw.Compile.Elaborate.Gensym.
+    Hw.Compile.Elaborate.Gensym.reset()
+
     name = module.__hw_design_name__()
     params = get_params(module)
     clocks = module.__hw_clocks__()
@@ -204,8 +209,22 @@ defmodule Hw.Compile.Elaborate do
   def substitute_defhw_expr_pub(expr, bindings), do: substitute_defhw_expr(expr, bindings)
   defp build_param_map(params) do
     for p <- params, into: %{} do
-      # Prefer explicitly set value over default
-      resolved_value = Map.get(p, :value) || p.default
+      # `case`, not `Map.get(p, :value) || p.default` -- but for a narrower reason
+      # than it looks. **In Elixir `0` is truthy**, so the obvious falsy-zero
+      # hazard does not exist: `PREG: 0` resolved correctly under `||` too. That
+      # was checked by reverting this line and re-running
+      # `test/xilinx_primitives_test.exs`, which still passed 17/17.
+      #
+      # What `||` did get wrong is `false`, the only falsy value that can reach
+      # here: `STARTUP_WAIT: false` against `default: "TRUE"` silently resolved to
+      # `"TRUE"`. Narrow, because Verilog parameters are numbers and strings
+      # rather than booleans -- but silent, and an override discarded without a
+      # word is the failure mode this repo keeps paying for.
+      resolved_value =
+        case Map.get(p, :value) do
+          nil -> p.default
+          value -> value
+        end
       param = %Param{
         name: p.name,
         default: p.default,
@@ -335,7 +354,14 @@ defmodule Hw.Compile.Elaborate do
         name: bb.name,
         module: bb.module,
         params: bb.params,
-        ports: ports
+        ports: ports,
+        # attrs were being dropped here while the child-instance path in
+        # Elaborate.Instances passed them through, so a `blackbox ..., attrs:`
+        # on a component's own primitive silently emitted no attribute. That
+        # matters: a Zynq PS7 needs (* keep *) to survive synthesis when
+        # nothing is connected to it, and without it runtime PCAP programming
+        # hangs the processor.
+        attrs: Map.get(bb, :attrs, [])
       }
 
       Design.add_op(d, blackbox_op)
@@ -359,11 +385,36 @@ defmodule Hw.Compile.Elaborate do
 
   # Inline all :defhw_call statement nodes in a body by substituting
   # the named template with arguments bound to parameters.
-  defp inline_defhw_calls(body, defhw_map) when is_list(body) do
-    Enum.flat_map(body, fn stmt -> inline_defhw_stmt(stmt, defhw_map) end)
+  #
+  # Inlining is a FIXPOINT, not a single pass. A defhw body may itself call
+  # other defhws — including from inside an hdl_case branch, which is the
+  # ordinary way to write a register-write dispatcher:
+  #
+  #     defhw commit_write() do
+  #       hdl_case <<wr_index::4>> do
+  #         <<2::4>> -> merge_scratch()
+  #         <<3::4>> -> merge_ctrl()
+  #       end
+  #     end
+  #
+  # Substituting the template used to return the body verbatim, so those inner
+  # calls survived as :defhw_call nodes. Nothing downstream matches that node:
+  # find_all_assigned does not see it as an assignment, build_mux_tree never
+  # visits it, and the emitter has no clause for it. The result was a component
+  # that elaborated cleanly, synthesised cleanly, and dropped every write on
+  # real hardware — the registers were declared, initialised and read, but
+  # never assigned. Re-inlining the substituted body is what closes that hole;
+  # assert_no_defhw_calls!/2 is the backstop that turns any future gap in this
+  # traversal into a loud failure instead of a silent one.
+  defp inline_defhw_calls(body, defhw_map), do: inline_defhw_calls(body, defhw_map, [])
+
+  defp inline_defhw_calls(body, defhw_map, stack) when is_list(body) do
+    Enum.flat_map(body, fn stmt -> inline_defhw_stmt(stmt, defhw_map, stack) end)
   end
 
-  defp inline_defhw_stmt(%{type: :defhw_call, name: name, args: args}, defhw_map) do
+  defp inline_defhw_stmt(%{type: :defhw_call, name: name, args: args}, defhw_map, stack) do
+    check_defhw_cycle!(name, stack)
+
     case Map.get(defhw_map, name) do
       nil ->
         raise ElabError,
@@ -376,35 +427,114 @@ defmodule Hw.Compile.Elaborate do
             message: "defhw #{name}/#{length(params)} called with #{length(args)} argument(s)",
             context: name
         end
+
+        # Arguments are evaluated in the CALLER's scope, so any defhw call
+        # inside an argument expression is inlined before binding.
+        args = Enum.map(args, &inline_defhw_expr(&1, defhw_map, stack))
         bindings = Map.new(Enum.zip(params, args))
-        substitute_defhw_body(template_body, bindings)
+
+        template_body
+        |> substitute_defhw_body(bindings)
+        |> inline_defhw_calls(defhw_map, [name | stack])
     end
   end
 
   # Recursively inline defhw calls inside if/case branches
-  defp inline_defhw_stmt(%{type: :if} = stmt, defhw_map) do
+  defp inline_defhw_stmt(%{type: :if} = stmt, defhw_map, stack) do
     [%{stmt |
-       condition: inline_defhw_expr(stmt.condition, defhw_map),
-       then_body: inline_defhw_calls(stmt.then_body, defhw_map),
-       else_body: stmt.else_body && inline_defhw_calls(stmt.else_body, defhw_map)
+       condition: inline_defhw_expr(stmt.condition, defhw_map, stack),
+       then_body: inline_defhw_calls(stmt.then_body, defhw_map, stack),
+       else_body: stmt.else_body && inline_defhw_calls(stmt.else_body, defhw_map, stack)
     }]
   end
 
-  defp inline_defhw_stmt(%{type: :case} = stmt, defhw_map) do
+  defp inline_defhw_stmt(%{type: :case} = stmt, defhw_map, stack) do
     inlined_clauses = Enum.map(stmt.clauses, fn clause ->
-      %{clause | body: inline_defhw_calls(clause.body, defhw_map)}
+      %{clause | body: inline_defhw_calls(clause.body, defhw_map, stack)}
     end)
-    [%{stmt | clauses: inlined_clauses}]
+    [%{stmt | clauses: inlined_clauses, expr: inline_defhw_expr(stmt.expr, defhw_map, stack)}]
   end
 
-  defp inline_defhw_stmt(%{type: :assign} = stmt, defhw_map) do
-    [%{stmt | value: inline_defhw_expr(stmt.value, defhw_map)}]
+  defp inline_defhw_stmt(%{type: :assign} = stmt, defhw_map, stack) do
+    [%{stmt | value: inline_defhw_expr(stmt.value, defhw_map, stack)}]
   end
 
-  defp inline_defhw_stmt(stmt, _defhw_map), do: [stmt]
+  # A bare `foo(...)` written as the whole body of a defhw parses as a
+  # :defhw_expr wrapping a call, not as a :defhw_call statement -- the DSL macro
+  # cannot tell a statement-level delegation from an expression until it knows
+  # what `foo` is. Unwrap it so statement-level delegation works:
+  #
+  #     defhw commit_write() do
+  #       merge_scratch()          # <- lands here, not on the :defhw_call clause
+  #     end
+  #
+  defp inline_defhw_stmt(%{type: :defhw_expr, value: %{defhw_call: name, args: args}}, defhw_map, stack) do
+    inline_defhw_stmt(%{type: :defhw_call, name: name, args: args}, defhw_map, stack)
+  end
+
+  defp inline_defhw_stmt(%{type: :defhw_expr} = stmt, defhw_map, stack) do
+    [%{stmt | value: inline_defhw_expr(stmt.value, defhw_map, stack)}]
+  end
+
+  defp inline_defhw_stmt(stmt, _defhw_map, _stack), do: [stmt]
+
+  # A defhw that reaches itself has no fixpoint: hardware is finite, so there is
+  # no base case to terminate on. Without this the elaborator loops forever and
+  # the build simply hangs.
+  defp check_defhw_cycle!(name, stack) do
+    if name in stack do
+      cycle = Enum.reverse([name | stack]) |> Enum.map_join(" -> ", &to_string/1)
+      raise ElabError,
+        message: "Recursive defhw: #{cycle}. " <>
+                 "defhw is inlined at elaboration time, so it cannot call itself " <>
+                 "directly or indirectly.",
+        context: name
+    end
+  end
+
+  # Backstop: no :defhw_call node may survive inlining.
+  #
+  # Every silent-drop bug in this area has the same shape — a statement node
+  # whose nested bodies inline_defhw_stmt/3 does not traverse, so the calls
+  # inside it are carried through untouched and then ignored by everything
+  # downstream. Rather than trust the traversal to stay complete as node types
+  # are added, walk the result and fail loudly. :on_condition subtrees are
+  # skipped: they are simulation-only wait constructs, never elaborated to
+  # hardware, and their bodies are interpreted with calls intact.
+  defp assert_no_defhw_calls!(body, where) do
+    case find_defhw_call(body) do
+      nil -> body
+      name ->
+        raise ElabError,
+          message: "defhw `#{name}` survived inlining in #{where}. " <>
+                   "This is an elaborator bug: the call would be silently " <>
+                   "dropped, producing hardware that reads correctly and " <>
+                   "never updates. Please report the enclosing construct.",
+          context: name
+    end
+  end
+
+  defp find_defhw_call(%{type: :on_condition}), do: nil
+  defp find_defhw_call(%{type: :defhw_call, name: name}), do: name
+  defp find_defhw_call(%{defhw_call: name}), do: name
+  defp find_defhw_call(%{} = node), do: node |> Map.values() |> find_defhw_call()
+  defp find_defhw_call(list) when is_list(list), do: Enum.find_value(list, &find_defhw_call/1)
+  defp find_defhw_call(tuple) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> find_defhw_call()
+  defp find_defhw_call(_), do: nil
 
   # Inline defhw calls in expression position
-  defp inline_defhw_expr(%{defhw_call: name, args: args}, defhw_map) do
+  defp inline_defhw_expr(%{defhw_call: name, args: args}, defhw_map, stack) do
+    check_defhw_cycle!(name, stack)
+    args = Enum.map(args, &inline_defhw_expr(&1, defhw_map, stack))
+
+    inlined = fn params, expr ->
+      bindings = Map.new(Enum.zip(params, args))
+      expr
+      |> substitute_defhw_expr(bindings)
+      |> inline_defhw_expr(defhw_map, [name | stack])
+    end
+
     case Map.get(defhw_map, name) do
       nil ->
         raise ElabError,
@@ -415,14 +545,11 @@ defmodule Hw.Compile.Elaborate do
           message: "defhw #{name}/#{length(params)} called with #{length(args)} argument(s)",
           context: name
       %{params: params, body: [%{type: :defhw_expr, value: expr}]} ->
-        bindings = Map.new(Enum.zip(params, args))
-        substitute_defhw_expr(expr, bindings)
+        inlined.(params, expr)
       %{params: params, body: [%{type: :assign, value: expr}]} ->
-        bindings = Map.new(Enum.zip(params, args))
-        substitute_defhw_expr(expr, bindings)
+        inlined.(params, expr)
       %{params: params, body: body} when length(body) == 1 ->
-        bindings = Map.new(Enum.zip(params, args))
-        substitute_defhw_expr(List.first(body), bindings)
+        inlined.(params, List.first(body))
       _ ->
         raise ElabError,
           message: "defhw #{name} used in expression position but has multiple statements",
@@ -430,25 +557,35 @@ defmodule Hw.Compile.Elaborate do
     end
   end
 
-  defp inline_defhw_expr({op, a, b}, defhw_map) when is_atom(op) do
-    {op, inline_defhw_expr(a, defhw_map), inline_defhw_expr(b, defhw_map)}
+  # Structural clauses come FIRST. {:concat, elems} and {:slice, b, hi, lo} both
+  # have an atom head, so the generic {op, a} / {op, a, b} clauses below would
+  # otherwise swallow them and recurse into a list or an arity they do not
+  # understand — leaving a defhw call inside a concat or a slice un-inlined.
+  defp inline_defhw_expr({:concat, elems}, defhw_map, stack) do
+    {:concat, Enum.map(elems, &inline_defhw_expr(&1, defhw_map, stack))}
   end
 
-  defp inline_defhw_expr({op, a}, defhw_map) when is_atom(op) do
-    {op, inline_defhw_expr(a, defhw_map)}
+  defp inline_defhw_expr({:slice, base, hi, lo}, defhw_map, stack) do
+    {:slice, inline_defhw_expr(base, defhw_map, stack),
+             inline_defhw_expr(hi, defhw_map, stack),
+             inline_defhw_expr(lo, defhw_map, stack)}
   end
 
-  defp inline_defhw_expr({:ternary, c, t, e}, defhw_map) do
-    {:ternary, inline_defhw_expr(c, defhw_map),
-               inline_defhw_expr(t, defhw_map),
-               inline_defhw_expr(e, defhw_map)}
+  defp inline_defhw_expr({:ternary, c, t, e}, defhw_map, stack) do
+    {:ternary, inline_defhw_expr(c, defhw_map, stack),
+               inline_defhw_expr(t, defhw_map, stack),
+               inline_defhw_expr(e, defhw_map, stack)}
   end
 
-  defp inline_defhw_expr({:concat, elems}, defhw_map) do
-    {:concat, Enum.map(elems, &inline_defhw_expr(&1, defhw_map))}
+  defp inline_defhw_expr({op, a, b}, defhw_map, stack) when is_atom(op) do
+    {op, inline_defhw_expr(a, defhw_map, stack), inline_defhw_expr(b, defhw_map, stack)}
   end
 
-  defp inline_defhw_expr(expr, _defhw_map), do: expr
+  defp inline_defhw_expr({op, a}, defhw_map, stack) when is_atom(op) do
+    {op, inline_defhw_expr(a, defhw_map, stack)}
+  end
+
+  defp inline_defhw_expr(expr, _defhw_map, _stack), do: expr
 
   # Substitute param names with argument expressions throughout a body
   defp substitute_defhw_body(body, bindings) when is_list(body) do
@@ -475,6 +612,16 @@ defmodule Hw.Compile.Elaborate do
       expr:    substitute_defhw_expr(stmt.expr, bindings),
       clauses: inlined_clauses
     }
+  end
+
+  # A nested call's ARGUMENTS live in the enclosing template's scope, so they
+  # must be substituted here even though the call itself is inlined later.
+  defp substitute_defhw_stmt(%{type: :defhw_call} = stmt, bindings) do
+    %{stmt | args: Enum.map(stmt.args, &substitute_defhw_expr(&1, bindings))}
+  end
+
+  defp substitute_defhw_stmt(%{type: :defhw_expr} = stmt, bindings) do
+    %{stmt | value: substitute_defhw_expr(stmt.value, bindings)}
   end
 
   defp substitute_defhw_stmt(stmt, _bindings), do: stmt
@@ -507,10 +654,14 @@ defmodule Hw.Compile.Elaborate do
     {op, substitute_defhw_expr(a, bindings)}
   end
 
+  defp substitute_defhw_expr(%{defhw_call: _} = call, bindings) do
+    %{call | args: Enum.map(call.args, &substitute_defhw_expr(&1, bindings))}
+  end
+
   defp substitute_defhw_expr(expr, _bindings), do: expr
 
   def elaborate_logic_block(design, %{type: :sequential, clock: clock_name, body: body} = logic_block, clock_map, signal_map, instance_map, memory_map, defhw_map, const_wire_map) do
-    body = inline_defhw_calls(body, defhw_map)
+    body = body |> inline_defhw_calls(defhw_map) |> assert_no_defhw_calls!("sequential block on #{clock_name}")
     clock = Map.fetch!(clock_map, clock_name)
     async_reset = Map.get(logic_block, :async_reset)
 
@@ -581,7 +732,7 @@ defmodule Hw.Compile.Elaborate do
   end
 
   def elaborate_logic_block(design, %{type: :combinational, body: body}, _clock_map, signal_map, instance_map, memory_map, defhw_map, _const_wire_map) do
-    body = inline_defhw_calls(body, defhw_map)
+    body = body |> inline_defhw_calls(defhw_map) |> assert_no_defhw_calls!("comb block")
     # Find ALL signals assigned anywhere in the body — including inside
     # if/case/hdl_case blocks. find_all_assignments only finds flat assigns
     # and would miss case arms, so we use find_all_assigned instead.
@@ -678,8 +829,17 @@ defmodule Hw.Compile.Elaborate do
     # Convert case_body with state values
     converted_case = convert_fsm_case(case_body, state_values)
 
-    # Combine defaults with case body
-    fsm_body = defaults ++ [converted_case]
+    # Combine defaults with case body.
+    #
+    # Inline defhw calls HERE, before find_all_assigned/1 below collects the
+    # signals that need reset assignments. elaborate_logic_block/8 inlines
+    # again (harmlessly — inlining is idempotent once no calls remain), but by
+    # then it is too late: a register assigned only from inside a defhw would
+    # not appear in assigned_signals, so the reset branch would omit it and the
+    # register would HOLD across reset instead of returning to its init: value.
+    # On a 7-series that also splits the control set, since some flops in the
+    # domain end up SR-used and some do not.
+    fsm_body = inline_defhw_calls(defaults ++ [converted_case], defhw_map)
 
     # If reset: is specified, wrap the entire FSM body in a priority reset mux.
     # The reset branch sets the state register to init_state and all other
