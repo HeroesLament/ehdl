@@ -67,34 +67,38 @@ defmodule FramesPoke do
 
   # --- tilegrid ------------------------------------------------------------
 
-  @doc "Resolve a tile to %{baseaddr:, offset:, words:, frames:} from tilegrid.json."
+  @doc """
+  Resolve a tile to %{baseaddr:, offset:, words:, frames:} from tilegrid.json.
+
+  A real JSON parse, deliberately. The first version regexed the tile object
+  and worked on every tile it was tested against -- then raised on
+  `RIOB33_SING_X73Y99`, because a SING tile's `bits` object carries an `alias`
+  sub-object BEFORE `baseaddr`, and the non-greedy body capture stopped at the
+  alias's closing brace. Nested JSON has now defeated a regex twice in this
+  codebase (see fasm_audit.exs, where the same shortcut silently reported
+  "0 tile types, clean"). It is not worth a third time.
+  """
   def tile_info(tile, grid_path) do
-    json = File.read!(grid_path)
+    grid = grid_path |> File.read!() |> Jason.decode!()
 
-    # Deliberately a regex rather than a JSON parse: tilegrid.json is tens of
-    # MB and only one object is ever wanted. The shape is stable.
-    re =
-      ~r/"#{Regex.escape(tile)}":\s*\{.*?"bits":\s*\{\s*"[A-Z_]+":\s*\{(?<body>.*?)\}/s
+    info =
+      case grid[tile] do
+        nil -> raise "tile #{tile} not found in #{grid_path}"
+        %{"bits" => bits} when map_size(bits) > 0 -> bits |> Map.values() |> hd()
+        _ -> raise "tile #{tile} has no bits block in #{grid_path}"
+      end
 
-    case Regex.named_captures(re, json) do
-      nil ->
-        raise "tile #{tile} not found in #{grid_path}"
-
-      %{"body" => body} ->
-        %{
-          baseaddr: body |> field(~r/"baseaddr":\s*"0x([0-9a-fA-F]+)"/) |> String.to_integer(16),
-          frames: body |> field(~r/"frames":\s*(\d+)/) |> String.to_integer(),
-          offset: body |> field(~r/"offset":\s*(\d+)/) |> String.to_integer(),
-          words: body |> field(~r/"words":\s*(\d+)/) |> String.to_integer()
-        }
-    end
-  end
-
-  defp field(body, re) do
-    case Regex.run(re, body) do
-      [_, v] -> v
-      _ -> raise "field #{inspect(re)} missing"
-    end
+    %{
+      baseaddr: info["baseaddr"] |> String.replace_prefix("0x", "") |> String.to_integer(16),
+      frames: info["frames"],
+      offset: info["offset"],
+      words: info["words"],
+      # SING tiles and a few others declare an alias: their bits are addressed
+      # in this tile's space but the FEATURE NAMES come from another tile type,
+      # sometimes with a site rename. Carried here so callers can reason about
+      # it rather than silently mis-attributing bits.
+      alias: info["alias"]
+    }
   end
 
   @doc "Every `<minor>_<bit>` this tile can address. THIS is the search space."
@@ -187,55 +191,4 @@ defmodule FramesPoke do
         raise "bad bit spec #{inspect(spec)} (want <minor>_<bit> or <minor>_<lo>..<hi>)"
     end
   end
-end
-
-# --- CLI -------------------------------------------------------------------
-#
-# Guarded so `Code.require_file/1` can pull the module in (the selftest does)
-# without the CLI firing on the host script's argv.
-
-if System.argv() != [] do
-
-grid =
-  System.get_env("PRJXRAY_DB", Path.expand("~/src/openxc7/prjxray-db")) <>
-    "/zynq7/xc7z020/tilegrid.json"
-
-case System.argv() do
-  ["--show", tile] ->
-    i = FramesPoke.tile_info(tile, grid)
-
-    IO.puts("""
-    #{tile}
-      baseaddr 0x#{Integer.to_string(i.baseaddr, 16)}
-      frames   #{i.frames}   (minors 0..#{i.frames - 1})
-      offset   #{i.offset}
-      words    #{i.words}
-      bit space #{i.frames * i.words * 32} bits total
-      one minor #{i.words * 32} bits
-    """)
-
-  [inp, out, tile | ops] ->
-    info = FramesPoke.tile_info(tile, grid)
-
-    list =
-      ops
-      |> Enum.chunk_every(2)
-      |> Enum.flat_map(fn
-        ["set", spec] -> FramesPoke.parse_spec(spec, 1)
-        ["clear", spec] -> FramesPoke.parse_spec(spec, 0)
-        other -> raise "bad op #{inspect(other)}"
-      end)
-
-    inp
-    |> FramesPoke.load()
-    |> FramesPoke.poke_all(info, list)
-    |> FramesPoke.save(out)
-
-    IO.puts("poked #{length(list)} bits in #{tile} -> #{out}")
-
-  _ ->
-    IO.puts("usage: frames_poke.exs <in.frames> <out.frames> <TILE> [set|clear <minor>_<bit>]...")
-    IO.puts("       frames_poke.exs --show <TILE>")
-end
-
 end

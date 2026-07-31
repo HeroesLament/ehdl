@@ -2,7 +2,7 @@
 #
 # frames_poke_selftest.exs -- known-answer control for frames_poke.exs
 #
-#   source scripts/openxc7-env.sh && elixir scripts/frames_poke_selftest.exs
+#   source scripts/openxc7-env.sh && mix run scripts/frames_poke_selftest.exs
 #
 # ## What is under test
 #
@@ -57,7 +57,7 @@ part = "xc7z020clg400-1"
 db = System.get_env("PRJXRAY_DB") || Path.expand("~/src/openxc7/prjxray-db")
 grid = db <> "/zynq7/xc7z020/tilegrid.json"
 mmcm = Path.expand("designs/libresdr_radio/build/mmcm_b.fasm")
-radio = Path.expand("designs/libresdr_radio/build/libresdr_radio_s0.fasm")
+radio = Path.expand("designs/libresdr_radio/build/libresdr_radio_s4.fasm")
 
 # {name, fasm, tile, feature, segbits db, tile type}
 cases = [
