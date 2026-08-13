@@ -166,7 +166,11 @@ defmodule Hw.AXI4Master do
   end
 
   # FSM for burst control
-  fsm :state, clock: :aclk, init: :idle do
+  # reset: :rst is load-bearing. Without it the `on :aclk` blocks below clear
+  # the FIFO pointers, beat counter and address on reset while this FSM stays
+  # wherever it was — potentially mid-burst with WVALID asserted against a PS
+  # that has just been reset, which wedges the AXI interconnect.
+  fsm :state, clock: :aclk, reset: :rst, init: :idle do
     defaults do
       m_axi_awvalid = 0
       m_axi_wvalid = 0
@@ -180,21 +184,47 @@ defmodule Hw.AXI4Master do
         on enable == 1 and fifo_has_burst == 1, next: :send_addr
 
       :send_addr ->
-        # Present address, wait for ready
+        # Present address, wait for ready.
+        #
+        # AWVALID is registered, so it is LOW on the first cycle of this state.
+        # Testing AWREADY alone would advance to :send_data against a slave
+        # that parks AWREADY high — streaming W beats for an address that was
+        # never accepted. Zynq's PS ports do park AWREADY high, so this is not
+        # hypothetical. Clear it on the way out too, or a second address can be
+        # accepted during :send_data.
         m_axi_awaddr = current_addr
         m_axi_awvalid = 1
-        on m_axi_awready == 1, next: :send_data
+        on m_axi_awvalid == 1 and m_axi_awready == 1 do
+          m_axi_awvalid = 0
+          next :send_data
+        end
 
       :send_data ->
-        # Stream data beats
+        # Stream data beats.
+        #
+        # in_send_data must be cleared alongside WVALID: the beat counter below
+        # advances on `in_send_data and m_axi_wready`, so leaving it asserted
+        # into :wait_resp would consume an extra FIFO entry.
         m_axi_wvalid = 1
         in_send_data = 1
-        on m_axi_wready == 1 and is_last_beat == 1, next: :wait_resp
+        on m_axi_wvalid == 1 and m_axi_wready == 1 and is_last_beat == 1 do
+          m_axi_wvalid = 0
+          in_send_data = 0
+          next :wait_resp
+        end
 
       :wait_resp ->
-        # Wait for write response
+        # Wait for write response.
+        #
+        # Guarded on in_wait_resp so the transition and the address update
+        # below fire on the same cycle. Testing BVALID alone would let the
+        # first cycle of this state (in_wait_resp still 0) transition without
+        # ever advancing the ring buffer address.
         in_wait_resp = 1
-        on m_axi_bvalid == 1, next: :idle
+        on in_wait_resp == 1 and m_axi_bvalid == 1 do
+          in_wait_resp = 0
+          next :idle
+        end
     end
   end
 

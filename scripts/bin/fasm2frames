@@ -1,0 +1,7 @@
+#!/bin/sh
+# prjxray's fasm2frames is a script, not an installed console entry point, and
+# the `prjxray` python package lives in the repo rather than in the venv --
+# hence the explicit PYTHONPATH.
+OXC7="${OXC7_ROOT:-$HOME/src/openxc7}"
+PYTHONPATH="$OXC7/prjxray${PYTHONPATH:+:$PYTHONPATH}" \
+  exec "${OXC7_PYTHON:-$OXC7/venv/bin/python}" "$OXC7/prjxray/utils/fasm2frames.py" "$@"

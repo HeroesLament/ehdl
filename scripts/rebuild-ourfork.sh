@@ -42,6 +42,11 @@ TOPICS=(
   fix/idelay-requires-idelayctrl
   tool/router-arc-diag
   fix/router-reserve-parallel-pips
+  fix/clock-router-arc-interleave
+  fix/postplace-controlset-repair
+  fix/cmt-clkout-counters
+  fix/cmt-startup-wait
+  fix/mmcm-frac-power-reg
 )
 
 cd "$NXP"

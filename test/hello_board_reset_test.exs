@@ -4,15 +4,10 @@ defmodule HelloBoard.ResetTest do
   setup do
     {:ok, sim} = Hw.Sim.start(HelloBoard.Top)
     Hw.Sim.set(sim, :pll_locked, 1)
-    # rst_sync counter needs 1024 cycles to deassert rst.
-    # Force the rst_sync registers to their post-lock steady state so
+    # Hw.ReEnum holds rst for HOLD_CYCLES (~50 ms) after power-on.
+    # Force the generator to its post-hold steady state so
     # tests don't need to burn 1024 ticks just to get past reset.
-    Hw.Sim.force_reg(sim, :rst_sync, %{
-      rst_sync_sync0:   1,
-      rst_sync_sync1:   1,
-      rst_sync_counter: 1023,
-      rst_sync_ready:   1,
-    })
+    HelloBoard.SimSetup.release_reset(sim)
     Hw.Sim.tick(sim, :clk_48, 3)
     {:ok, sim: sim}
   end

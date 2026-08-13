@@ -146,16 +146,48 @@ defmodule Hw.Compile.Elaborate.Instances do
           %{__struct__: Hw.IR.Types.Param, name: param_name} ->
             case Map.get(child_param_map, param_name) do
               %{value: val} when not is_nil(val) -> val
-              _ -> raise "Unresolved PLL param: #{param_name}"
+              _ -> raise unresolved_param_error(param_name, k, inst_name, child_module, child_param_map)
             end
-          atom when is_atom(atom) ->
+          # A bare atom in a `params:` list is a reference to one of the
+          # component's own `param` declarations. Booleans and nil are the only
+          # atoms that can be meant literally.
+          #
+          # Anything else that failed to resolve used to fall through and be
+          # emitted as bare Verilog text, so a misspelled name became
+          # `.INIT(REAL_NAEM)` -- an undefined identifier. yosys does reject that
+          # ("Parameter u.INIT with non-constant value!"), so it was never
+          # silent; but the complaint lands on generated Verilog with no way back
+          # to the line that caused it. And a param declared with no `default:`
+          # that no instance sets reached the emitter as a `%Param{}` struct,
+          # which died in `to_string/1` with `protocol String.Chars not
+          # implemented for Hw.IR.Types.Param` -- true, and useless.
+          #
+          # Checked before making this loud: zero atom-valued blackbox params
+          # across lib/, designs/ and examples/ fail to resolve today, so nothing
+          # relied on the pass-through.
+          atom when is_atom(atom) and not is_boolean(atom) and not is_nil(atom) ->
             case Map.get(child_param_map, atom) do
-              nil -> atom
               %{value: val} when not is_nil(val) -> val
-              other -> other
+              _ -> raise unresolved_param_error(atom, k, inst_name, child_module, child_param_map)
             end
+
           other -> other
         end
+
+        # Verilog parameters take numbers and strings. A boolean here is always a
+        # mistake, and specifically the `STARTUP_WAIT: false` mistake -- reaching
+        # for Elixir's `false` where the primitive wants the string `"FALSE"`.
+        #
+        # Worth catching rather than passing through, because both of the other
+        # outcomes are bad. Before `build_param_map` stopped using `||`, `false`
+        # was silently replaced by the parameter's default. After, it emits
+        # `.STARTUP_WAIT(false)` -- a bare Verilog identifier that yosys rejects
+        # with a message about a non-constant parameter, pointing at generated
+        # code. Neither says "you wrote a boolean". This does.
+        if is_boolean(resolved) do
+          raise boolean_param_error(k, resolved, inst_name, child_module)
+        end
+
         {k, resolved}
       end)
 
@@ -576,4 +608,43 @@ defmodule Hw.Compile.Elaborate.Instances do
   defp find_signal(sig_name, nil, signal_map, _instance_map) do
     Map.get(signal_map, sig_name)
   end
+
+  # Names the parameter, the component, the instance and the alternatives.
+  # Replaces two bad diagnostics: a hardcoded "Unresolved PLL param" left over
+  # from the ULX3S PLL wrapper, and a `String.Chars` protocol error from handing
+  # a `%Param{}` struct to `to_string/1`.
+  defp unresolved_param_error(param_name, blackbox_key, inst_name, child_module, child_param_map) do
+    known =
+      case Enum.sort(Map.keys(child_param_map)) do
+        [] -> "none declared"
+        names -> Enum.map_join(names, ", ", &inspect/1)
+      end
+
+    """
+    unresolved parameter #{inspect(param_name)} in #{inspect(child_module)}
+
+      blackbox parameter : #{blackbox_key}
+      instance           : #{inspect(inst_name)}
+      declared params    : #{known}
+
+    Either #{inspect(param_name)} is misspelled, or it is declared with no
+    `default:` and this instance did not set it. A `param` without a default is
+    only valid if every instance supplies a value.
+    """
+  end
+
+
+  defp boolean_param_error(blackbox_key, value, inst_name, child_module) do
+    suggestion = if value, do: ~s("TRUE"), else: ~s("FALSE")
+
+    """
+    boolean value #{inspect(value)} for parameter #{blackbox_key} in #{inspect(child_module)}
+
+      instance : #{inspect(inst_name)}
+
+    Verilog parameters take numbers and strings, not booleans. If the primitive
+    expects a string enum, write #{suggestion}. If it expects a bit, write 1 or 0.
+    """
+  end
+
 end

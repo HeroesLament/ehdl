@@ -76,7 +76,12 @@ defmodule Hw.UART.TX do
     case uart_state do
       :idle ->
         ready = 1
-        on valid do
+        # `fsm` outputs are registered, so `ready` is low on the first cycle of
+        # :idle and would stay high into :sending. Test both halves and clear
+        # it on the way out, or a producer can have a byte consumed it never
+        # saw accepted, then see a stale `ready` and send it again.
+        on ready and valid do
+          ready = 0
           load_frame(data)
           next :sending
         end
@@ -86,7 +91,12 @@ defmodule Hw.UART.TX do
         baud_cnt = baud_cnt + 1
         on tick do
           shift_bit()
-          on bit_cnt == 9, next: :idle
+          on bit_cnt == 9 do
+            # Re-assert here so `ready` is high on the first cycle back in
+            # :idle rather than one cycle later.
+            ready = 1
+            next :idle
+          end
         end
     end
   end

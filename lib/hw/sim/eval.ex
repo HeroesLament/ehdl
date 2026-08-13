@@ -20,7 +20,8 @@ defmodule Hw.Sim.Eval do
   alias Hw.IR.Ops.{Assign, Add, Sub, Mul, Div, Neg, Mod, Abs, Min, Max, Clog2,
                    Mux, Eq, Neq, Lt, Gt, Lte, Gte, BitAnd, BitOr, BitXor,
                    BitNot, Shl, Shr, Shra, ReduceAnd, ReduceOr, ReduceXor,
-                   Replicate, Cast, Slice, Concat, Reg, Blackbox, Tristate, MemRead}
+                   Replicate, Cast, Slice, Concat, Reg, Blackbox, Tristate, MemRead,
+                   ZeroExtend, SignExtend, ReverseBits, Popcount, MulRound}
   alias Hw.IR.Types.{Signal, Const}
 
   @doc """
@@ -300,6 +301,64 @@ defmodule Hw.Sim.Eval do
       true ->
         {out.name, mask(read(input, state), w)}
     end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Width-changing and bit-counting ops
+  #
+  # These existed in Hw.Sim.Compiler but not here, so any design reaching the
+  # interpreted path died with a FunctionClauseError rather than a useful
+  # message — which is what broke the hello_board suite on the USB SIE's CRC
+  # buffer. ReverseBits and Popcount are implemented properly here; the
+  # compiler currently approximates them (pass-through and reduce_or), so the
+  # two paths do NOT agree for those ops yet.
+  # ---------------------------------------------------------------------------
+
+  def eval(%ZeroExtend{output: out, input: input}, state, widths, _mems) do
+    # Value is unchanged, only the declared width grows. Mask anyway so a
+    # wider-than-declared input cannot leak high bits through.
+    [{out.name, mask(read(input, state), width(out, widths))}]
+  end
+
+  def eval(%SignExtend{output: out, input: input}, state, widths, _mems) do
+    in_w = width(input, widths)
+    out_w = width(out, widths)
+    val = mask(read(input, state), in_w)
+
+    extended =
+      if in_w > 0 and out_w > in_w and ((val >>> (in_w - 1)) &&& 1) == 1 do
+        val ||| (((1 <<< (out_w - in_w)) - 1) <<< in_w)
+      else
+        val
+      end
+
+    [{out.name, mask(extended, out_w)}]
+  end
+
+  def eval(%ReverseBits{output: out, input: input}, state, widths, _mems) do
+    in_w = width(input, widths)
+    val = mask(read(input, state), in_w)
+
+    reversed =
+      Enum.reduce(0..(in_w - 1)//1, 0, fn i, acc ->
+        acc ||| (((val >>> i) &&& 1) <<< (in_w - 1 - i))
+      end)
+
+    [{out.name, mask(reversed, width(out, widths))}]
+  end
+
+  def eval(%Popcount{output: out, input: input}, state, widths, _mems) do
+    in_w = width(input, widths)
+    val = mask(read(input, state), in_w)
+    count = Enum.count(0..(in_w - 1)//1, &(((val >>> &1) &&& 1) == 1))
+    [{out.name, mask(count, width(out, widths))}]
+  end
+
+  def eval(%MulRound{output: out, a: a, b: b, shift: shift}, state, widths, _mems) do
+    s = if is_integer(shift), do: shift, else: read(shift, state)
+    prod = read(a, state) * read(b, state)
+    val = if s > 0, do: (prod + (1 <<< (s - 1))) >>> s, else: prod
+    [{out.name, mask(val, width(out, widths))}]
   end
 
   # ---------------------------------------------------------------------------

@@ -61,3 +61,40 @@ ehdl_snapshot_*.tar.gz
 /gd1.txt
 /rawdash.txt
 /decoder--*.csv
+
+# libresdr_radio build artifacts (match the other designs)
+/designs/libresdr_radio/build/
+# generated / scratch working dirs
+/_cetest/
+/_emit/
+/_fuzz/
+/_prim/
+/_to_delete/
+*.bak
+
+# design build snapshots / regenerable data / vendor refs
+top.ex.*
+/designs/libresdr_radio/pll/
+/designs/libresdr_radio/*.bin
+check.dtb
+*.pdf
+
+# libresdr_radio generated bitstreams / sweeps / logs
+/designs/libresdr_radio/**/*.gz
+/designs/libresdr_radio/**/*.bin
+/designs/libresdr_radio/**/*.log
+/designs/libresdr_radio/**/*.seed
+/designs/libresdr_radio/**/*.frames
+/designs/libresdr_radio/**/*.db
+
+# generated FPGA build artifacts across ALL designs
+# (ehdl source is .ex/.exs; .v/.json are emitted verilog / netlists)
+designs/**/build/
+designs/**/*.bit
+designs/**/*.frames
+designs/**/*.fasm
+designs/**/*.json
+designs/**/*.v
+designs/**/*.lpf
+designs/**/*.err
+designs/**/*.log

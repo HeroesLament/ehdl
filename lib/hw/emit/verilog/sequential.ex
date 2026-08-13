@@ -57,7 +57,7 @@ defmodule Hw.Emit.Verilog.Sequential do
   defp emit_clock_block(clock, regs, block_kept) do
     edge = if clock.edge == :posedge, do: "posedge", else: "negedge"
 
-    {with_reset, _without_reset} = Enum.split_with(regs, & &1.reset_value != nil)
+    {with_reset, without_reset} = Enum.split_with(regs, & &1.reset_value != nil)
     has_reset = with_reset != []
 
     async_reset = Enum.find_value(regs, fn reg -> reg.async_reset end)
@@ -74,30 +74,55 @@ defmodule Hw.Emit.Verilog.Sequential do
 
     # Use the clock's declared reset signal, falling back to :rst for
     # backward compatibility with components that don't declare one
-    reset_signal = async_reset || Map.get(clock, :reset_signal) || :rst
+    # Only a reset signal we can actually name. The old `|| :rst` fallback
+    # emitted `if (rst)` against a wire that need not exist: after an instance
+    # is flattened its local `rst` becomes `<inst>_rst`, so the guard referenced
+    # an undeclared identifier. Verilog implicitly declares it, nothing drives
+    # it, and synthesis treats it as a constant — yosys reported "always-active
+    # SRST" and folded a whole design away. No error is raised anywhere along
+    # that path, which is what made it expensive to find.
+    #
+    # Losing the guard costs nothing: `reset:` on an fsm is elaborated into a
+    # priority mux inside the register's input (`rst ? init : d`), and that mux
+    # is correctly renamed during flattening. Synthesis infers the synchronous
+    # reset from it just the same.
+    reset_signal = async_reset || Map.get(clock, :reset_signal)
+    emit_guard? = has_reset and reset_signal != nil
 
-    lines = if has_reset do
-      reset_lines = [
-        "    if (#{reset_signal}) begin"
-      ] ++
-      Enum.map(with_reset, fn reg ->
-        "      #{reg.output.name} <= #{VerilogOps.emit_value(reg.reset_value)};"
-      end) ++
-      [
-        "    end else begin"
-      ]
-      lines ++ reset_lines
-    else
-      lines
-    end
+    # A register with no reset value must be assigned UNCONDITIONALLY. It must
+    # never land inside the else branch of some other register's reset guard.
+    #
+    # A reset synchroniser has exactly that shape — two unreset flops feeding
+    # the reset that everything else is guarded by. Sweeping it into the else
+    # branch gates the synchroniser with the reset it generates: the reset
+    # asserts at power-up, the synchroniser can never advance, the reset never
+    # deasserts, and every flop in the domain sits at its reset value forever.
+    #
+    # It is not a subtle failure. Synthesis proves the design does nothing and
+    # folds it to nothing: yosys reports "always-active SRST (changing to const
+    # D)" and a LibreSDR PS7 bring-up design collapsed to two cells (the PS7
+    # and a clock buffer) with every register gone. The generated Verilog looks
+    # plausible, so this reads as a toolchain problem rather than an emitter
+    # bug — which is why the split is now honoured rather than discarded.
+    {plain_regs, guarded_regs} =
+      if emit_guard?, do: {without_reset, with_reset}, else: {regs, []}
 
-    assign_lines = Enum.flat_map(regs, fn reg ->
-      emit_reg_assignment(reg, has_reset)
-    end)
+    plain_lines = Enum.flat_map(plain_regs, &emit_reg_assignment(&1, false))
 
-    close_lines = if has_reset, do: ["    end"], else: []
+    guard_lines =
+      if emit_guard? do
+        ["    if (#{reset_signal}) begin"] ++
+          Enum.map(guarded_regs, fn reg ->
+            "      #{reg.output.name} <= #{VerilogOps.emit_value(reg.reset_value)};"
+          end) ++
+          ["    end else begin"] ++
+          Enum.flat_map(guarded_regs, &emit_reg_assignment(&1, true)) ++
+          ["    end"]
+      else
+        []
+      end
 
-    lines ++ assign_lines ++ close_lines ++ ["  end"]
+    lines ++ plain_lines ++ guard_lines ++ ["  end"]
   end
 
   defp emit_reg_assignment(reg, has_reset_block) do

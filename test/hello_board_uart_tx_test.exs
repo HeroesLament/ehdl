@@ -20,10 +20,7 @@ defmodule HelloBoard.UARTTXTest do
     {:ok, sim} = Hw.Sim.start(HelloBoard.Top)
     Hw.Sim.set(sim, :pll_locked, 1)
     Hw.Sim.set(sim, :wifi_txd, 1)
-    Hw.Sim.force_reg(sim, :rst_sync, %{
-      rst_sync_sync0: 1, rst_sync_sync1: 1,
-      rst_sync_counter: 1023, rst_sync_ready: 1,
-    })
+    HelloBoard.SimSetup.release_reset(sim)
     Hw.Sim.force_reg(sim, :sie, %{
       sie_ep_out_valid: 0, sie_ep_out_pkt_end: 0,
       sie_ep_out_data: 0,  sie_ep_out_ep: 0,

@@ -588,6 +588,30 @@ defmodule HdlCaseTest do
     end
   end
 
+  # Three specific arms plus a trailing catch-all: enough arms to reach the
+  # always-block / casez lowerings, which is where the priority bug lived.
+  # (<=2 arms lower to a ternary, which was always first-match-wins.)
+  defmodule PriorityChain do
+    use Hw.Component
+    clock :clk, freq: 1.0
+    input :rst, 1
+    input :x,   2
+    output :out, 3
+
+    on :clk do
+      if rst do
+        out = 0
+      else
+        hdl_case <<x::2>> do
+          <<0::2>> -> out = 4
+          <<1::2>> -> out = 5
+          <<2::2>> -> out = 6
+          <<_::2>> -> out = 7
+        end
+      end
+    end
+  end
+
   describe "priority order" do
     test "catch-all as first arm shadows all specific arms" do
       sim = sim!(PriorityOrder)
@@ -598,6 +622,112 @@ defmodule HdlCaseTest do
       assert get(sim, :out) == 1
       set(sim, :x, 1); tick(sim)
       assert get(sim, :out) == 1
+    end
+
+    # The two tests above run in simulation, and simulation was never the
+    # broken half: both the Elixir interpreter and the Rust NIF pick the FIRST
+    # matching arm. The Verilog did not. `emit_mux_always` (>2 arms) emitted a
+    # flat run of independent `if`s over a pre-assigned default, so the LAST
+    # match won -- a sim/synth split that passes every simulation test and
+    # misbehaves on silicon. Assert on the emitted text, because nothing that
+    # runs in the simulator can see this.
+    test "emitted Verilog is a priority chain, not a run of independent ifs" do
+      verilog =
+        PriorityChain
+        |> Elaborate.elaborate()
+        |> Hw.emit()
+
+      assigns =
+        verilog
+        |> String.split("\n")
+        |> Enum.map(&String.trim/1)
+        |> Enum.filter(&String.starts_with?(&1, ["if (", "else if ("]))
+
+      refute assigns == [], "expected a case-derived mux always block"
+
+      leading = Enum.count(assigns, &String.starts_with?(&1, "if ("))
+
+      assert leading == 1,
+             "each arm must chain off the previous one; found #{leading} unchained " <>
+               "`if`s, which makes the LAST match win:\n" <> Enum.join(assigns, "\n")
+    end
+
+    test "casez form preserves arm order" do
+      verilog =
+        PriorityChain
+        |> Elaborate.elaborate()
+        |> Hw.emit(casez: true)
+
+      arms =
+        verilog
+        |> String.split("\n")
+        |> Enum.map(&String.trim/1)
+        |> Enum.filter(&Regex.match?(~r/^2'b[01?]{2}:/, &1))
+
+      # Source order is <<0::2>>, <<1::2>>, <<2::2>>; casez is first-match-wins,
+      # so the emitted arms must appear in that same order. They were previously
+      # reversed, to compensate for the last-match-wins always block.
+      assert arms |> Enum.map(&String.slice(&1, 0, 6)) == ["2'b00:", "2'b01:", "2'b10:"],
+             "casez arms out of source order:\n" <> Enum.join(arms, "\n")
+    end
+
+    test "four-arm chain: each specific arm wins, catch-all takes the rest" do
+      sim = sim!(PriorityChain)
+      set(sim, :rst, 1); tick(sim)
+      set(sim, :rst, 0)
+
+      for {x, expected} <- [{0, 4}, {1, 5}, {2, 6}, {3, 7}] do
+        set(sim, :x, x); tick(sim)
+        assert get(sim, :out) == expected
+      end
+    end
+
+    test "a catch-all that is not the last arm still shadows the arms below it" do
+      # Regression guard for the rerouting this replaced: an all-wildcard arm
+      # used to be pulled out into the mux default REGARDLESS of position, so a
+      # leading catch-all lost to the specific arms below it — silently
+      # inverting the author's stated priority.
+      verilog =
+        PriorityOrder
+        |> Elaborate.elaborate()
+        |> Hw.emit()
+
+      assert verilog =~ "module", "expected the design to elaborate and emit"
+
+      sim = sim!(PriorityOrder)
+      set(sim, :rst, 1); tick(sim)
+      set(sim, :rst, 0)
+
+      for x <- 0..3 do
+        set(sim, :x, x); tick(sim)
+        assert get(sim, :out) == 1, "x=#{x} escaped the leading catch-all"
+      end
+    end
+
+    test "two catch-all arms are rejected" do
+      assert_raise Hw.Compile.Elaborate.ElabError, ~r/more than one catch-all/, fn ->
+        defmodule TwoCatchAlls do
+          use Hw.Component
+          clock :clk, freq: 1.0
+          input :rst, 1
+          input :x,   2
+          output :out, 3
+
+          on :clk do
+            if rst do
+              out = 0
+            else
+              hdl_case <<x::2>> do
+                <<0::2>> -> out = 2
+                <<_::2>> -> out = 1
+                <<_::2>> -> out = 3
+              end
+            end
+          end
+        end
+
+        Elaborate.elaborate(TwoCatchAlls)
+      end
     end
 
     test "specific arms before catch-all fire correctly" do

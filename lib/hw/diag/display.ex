@@ -183,18 +183,18 @@ defmodule Hw.Diag.Display do
     else
 
       # Capture sticky events every cycle
-      if ep_in_done,       do: done_latch          = one
-      if ep_in_nak,        do: nak_latch            = one
-      if ep_out_pkt_end,   do: pkt_end_latch        = one
-      if ep_out_valid,     do: ep_out_valid_latch   = one
-      if ep_out_setup,     do: ep_out_setup_latch   = one
-      if ep_in_ready,      do: ep_in_ready_latch    = one
-      if phy_rx_active,    do: phy_rx_active_latch  = one
-      if phy_rx_valid,     do: phy_rx_valid_latch   = one
-      if phy_rx_se0,       do: phy_rx_se0_latch     = one
-      if phy_tx_valid,     do: phy_tx_valid_latch   = one
+      if ep_in_done,       do: done_latch             = one
+      if ep_in_nak,        do: nak_latch              = one
+      if ep_out_pkt_end,   do: pkt_end_latch          = one
+      if ep_out_valid,     do: ep_out_valid_latch     = one
+      if ep_out_setup,     do: ep_out_setup_latch     = one
+      if ep_in_ready,      do: ep_in_ready_latch      = one
+      if phy_rx_active,    do: phy_rx_active_latch    = one
+      if phy_rx_valid,     do: phy_rx_valid_latch     = one
+      if phy_rx_se0,       do: phy_rx_se0_latch       = one
+      if phy_tx_valid,     do: phy_tx_valid_latch     = one
       if sie_send_handshake, do: send_handshake_latch = one
-      if sie_tx_state != 0,  do: sie_tx_ran_latch   = one
+      if sie_tx_state != 0,  do: sie_tx_ran_latch     = one
 
       # Counters
       if ep_out_pkt_end,   do: pkt_end_count        = pkt_end_count_next
@@ -206,18 +206,18 @@ defmodule Hw.Diag.Display do
         if frame_idx == w4_9 do
           frame_idx = w4_0
           # Clear all latches at SYNC
-          done_latch          = zero
-          nak_latch           = zero
-          pkt_end_latch       = zero
-          ep_out_valid_latch  = zero
-          ep_out_setup_latch  = zero
-          ep_in_ready_latch   = zero
-          phy_rx_active_latch = zero
-          phy_rx_valid_latch  = zero
-          phy_rx_se0_latch    = zero
-          phy_tx_valid_latch  = zero
+          done_latch           = zero
+          nak_latch            = zero
+          pkt_end_latch        = zero
+          ep_out_valid_latch   = zero
+          ep_out_setup_latch   = zero
+          ep_in_ready_latch    = zero
+          phy_rx_active_latch  = zero
+          phy_rx_valid_latch   = zero
+          phy_rx_se0_latch     = zero
+          phy_tx_valid_latch   = zero
           send_handshake_latch = zero
-          sie_tx_ran_latch    = zero
+          sie_tx_ran_latch     = zero
         else
           frame_idx = frame_idx_next
         end

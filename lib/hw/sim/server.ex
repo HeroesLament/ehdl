@@ -66,12 +66,94 @@ defmodule Hw.Sim do
   Use this in tests to put hardware state machines into a specific state
   without simulating the ticks needed to get there naturally.
 
-      Hw.Sim.force_reg(sim, :cdc, %{dev_state: 3, ep1_in_toggle: 0})
+  Keys are **fully-prefixed** register names, matching what the design emits:
+
+      Hw.Sim.force_reg(sim, :cdc, %{cdc_dev_state: 3, cdc_ep1_in_toggle: 0})
+
+  This example used to be written `%{dev_state: 3, ep1_in_toggle: 0}` — without
+  the prefix, and therefore wrong. Nothing complained, because unknown keys were
+  merged in and written where no one reads them, so the documented call silently
+  forced nothing. Both the entity name and every key are now validated.
   """
-  def force_reg(%{sim_id: sid}, entity_name, reg_values) do
+  def force_reg(%{sim_id: sid, schedule: schedule}, entity_name, reg_values) do
+    validate_force_reg!(schedule, entity_name, reg_values)
     Hw.Sim.Entity.force_reg(entity_name, reg_values, sid)
     Entity.eval_now(:_top_, sid)
     State.clear_top_dirty(sid)
+  end
+
+  # Both of these used to be undiagnosed, and between them they cost this repo a
+  # test suite that could not be used as a gate.
+  #
+  # An entity name that does not exist reached `GenServer.call` on an unregistered
+  # via-tuple and exited with `no process` from `setup`. Forty-one failures across
+  # eight modules said that and nothing else; the actual cause was that
+  # `designs/hello_board/top.ex` had been refactored to `Hw.ReEnum` and the string
+  # `rst_sync` no longer appears in it at all, while seven test files still force
+  # an `:rst_sync` entity.
+  #
+  # A *signal* name that does not exist was worse, because it was silent:
+  # `handle_call({:force_reg, ...})` does `Map.merge(state.reg_state, reg_values)`,
+  # which accepts any key whatsoever and writes it to ETS where nothing reads it.
+  # A test could force `cdc_ep1_toggle` when the register is `cdc_ep1_in_toggle`,
+  # get no complaint, and go on to exercise a state it never actually set up --
+  # passing vacuously, or failing somewhere unrelated. The simulator is the
+  # instrument every other claim in this project is measured with, so an
+  # instrument that accepts a typo without comment is the most expensive kind of
+  # bug available here.
+  defp validate_force_reg!(schedule, entity_name, reg_values) do
+    case Map.get(schedule.entities, entity_name) do
+      nil ->
+        known = schedule.entities |> Map.keys() |> Enum.sort() |> Enum.map_join(", ", &inspect/1)
+
+        raise ArgumentError,
+              "no entity #{inspect(entity_name)} in this design\n\n" <>
+                "  entities : #{known}\n\n" <>
+                "Entities are derived from signal-name prefixes, so an entity only\n" <>
+                "exists if the design still produces signals with its prefix. If this\n" <>
+                "name used to work, the design was probably refactored out from under\n" <>
+                "the test.\n"
+
+      entity ->
+        known = MapSet.new(entity.regs, & &1.output.name)
+
+        case Enum.reject(Map.keys(reg_values), &MapSet.member?(known, &1)) do
+          [] ->
+            :ok
+
+          unknown ->
+            plural = if length(unknown) > 1, do: "s", else: ""
+            names = Enum.map_join(unknown, ", ", &inspect/1)
+            regs = known |> Enum.sort() |> Enum.map_join(", ", &inspect/1)
+
+            raise ArgumentError,
+                  "#{inspect(entity_name)} has no register#{plural} #{names}\n\n" <>
+                    "  registers : #{regs}\n" <>
+                    suggestions(unknown, known, entity) <>
+                    "\nKeys must be fully-prefixed register names. Unknown keys used to be\n" <>
+                    "merged in silently and written where nothing reads them, so the forced\n" <>
+                    "state never took effect.\n"
+        end
+    end
+  end
+
+  # The mistake worth spelling out: dropping the entity prefix. The docstring
+  # example above this function once showed unprefixed keys, so it is not a
+  # hypothetical confusion.
+  defp suggestions(unknown, known, entity) do
+    prefix = entity.prefix || ""
+
+    hints =
+      for name <- unknown,
+          prefixed = :"#{prefix}#{name}",
+          MapSet.member?(known, prefixed) do
+        "    #{inspect(name)} -> #{inspect(prefixed)} (missing the #{inspect(prefix)} prefix)"
+      end
+
+    case hints do
+      [] -> ""
+      hints -> "\n  did you mean:\n" <> Enum.join(hints, "\n") <> "\n"
+    end
   end
 
   @doc """

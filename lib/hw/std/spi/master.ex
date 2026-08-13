@@ -12,6 +12,7 @@ defmodule Hw.SPI.Master do
 
   ## Parameters
 
+  - `MISO_SAMPLE_TRAILING` - Which SCK edge to sample MISO on (default 0)
   - `CLK_FREQ` - System clock in Hz (default 48_000_000)
   - `SCK_FREQ` - Target SPI clock in Hz (default 4_000_000). The half-period is
     `CLK_FREQ / SCK_FREQ / 2` system clocks, so SCK = CLK_FREQ / (2 * that).
@@ -35,10 +36,41 @@ defmodule Hw.SPI.Master do
 
   ## Mode 0 timing
 
-  SCK idles low. MOSI is set up while SCK is low; the slave samples MOSI and we
-  sample MISO on the SCK rising (leading) edge; MOSI advances on the falling
-  (trailing) edge. The first bit (MSB) is set up as CS asserts, before the first
-  rising edge — the initial SCK-low half period doubles as CS setup time.
+  SCK idles low. MOSI is set up while SCK is low; the slave samples MOSI on the
+  SCK rising (leading) edge; MOSI advances on the falling (trailing) edge. The
+  first bit (MSB) is set up as CS asserts, before the first rising edge — the
+  initial SCK-low half period doubles as CS setup time.
+
+  ## Which edge MISO is sampled on
+
+  "SPI mode 0" pins down when the MASTER drives and samples, but not when the
+  slave updates its output, and devices disagree:
+
+  - An MCP2515 drives MISO on the FALLING edge. The bit is stable through the
+    whole SCK-low period, so sampling as SCK rises is correct.
+  - An AD936x drives SPI_DO on the RISING edge. During SCK-low the line still
+    holds the PREVIOUS bit, so sampling as SCK rises reads one bit early.
+
+  Sampling one bit early is not a garbled result — it is a coherent, plausible
+  stream shifted by one place, which is why it survives a casual look. Reading
+  the AD9363's product ID returned 0x85 where 0x0A was expected, and
+  0x85 << 1 == 0x0A: every bit correct, every bit in the wrong place, and the
+  LSB of each byte lost off the end.
+
+  `MISO_SAMPLE_TRAILING` selects the edge. 0 (the default) samples as SCK
+  rises, preserving the behaviour every existing caller was written against.
+  1 samples as SCK falls, half a period later, for slaves that update on the
+  rising edge.
+
+  Both shift registers are always clocked and the choice is a mux on a
+  compile-time constant, so the unused path folds away in synthesis. Making the
+  sampling instant itself conditional would put a parameter in the middle of
+  the FSM's control flow for no gain.
+
+  Do not attempt to recover the lost bit by clocking extra cycles. On an
+  AD9363, a 32-clock transaction where the device expects 24 desynchronises its
+  SPI state machine, and only a RESETB pulse recovers it — the reads after it
+  come back as zeros and look like a dead chip.
 
   ## FSM states
 
@@ -52,6 +84,9 @@ defmodule Hw.SPI.Master do
 
   use Hw.Component
 
+  # 0: sample MISO as SCK rises (slave updates on the falling edge, e.g. MCP2515)
+  # 1: sample MISO as SCK falls (slave updates on the rising edge, e.g. AD936x)
+  param :MISO_SAMPLE_TRAILING, default: 0
   param :CLK_FREQ, default: 48_000_000
   param :SCK_FREQ, default: 4_000_000
 
@@ -72,6 +107,7 @@ defmodule Hw.SPI.Master do
   wire :bit_cnt,      4, init: 0
   wire :tx_shift,     8, init: 0
   wire :rx_shift,     8, init: 0
+  wire :rx_shift_t,   8, init: 0
   wire :sck_reg,      1, init: 0
   wire :csn_reg,      1, init: 1
   wire :rx_data_reg,  8, init: 0
@@ -79,6 +115,8 @@ defmodule Hw.SPI.Master do
   wire :cs_hold_reg,  1, init: 0
   wire :half_tick,    1
   wire :zero,         1
+  wire :rx_trailing,  8
+  wire :rx_final,     8
 
   comb do
     half_tick = (div_cnt == CLK_FREQ / SCK_FREQ / 2 - 1)
@@ -88,6 +126,12 @@ defmodule Hw.SPI.Master do
     cs_n      = csn_reg
     rx_data   = rx_data_reg
     rx_valid  = rx_valid_reg
+
+    # The trailing-edge path samples its eighth bit in the same cycle the byte
+    # is latched, so the final value has to include the bit arriving now rather
+    # than the register's pre-edge contents.
+    rx_trailing = {rx_shift_t[6..0], miso}
+    rx_final = if MISO_SAMPLE_TRAILING == 1, do: rx_trailing, else: rx_shift
   end
 
   # Latch a byte and open a transfer: MOSI follows tx_shift[7] (the MSB),
@@ -112,7 +156,12 @@ defmodule Hw.SPI.Master do
       :idle ->
         tx_ready = 1
         div_cnt  = 0
-        on tx_valid do
+        # `fsm` outputs are registered: `tx_ready` is low on the first cycle of
+        # :idle and would remain high into :low. Test both halves and clear it
+        # on the transition, so a byte cannot be consumed without a handshake
+        # the producer actually observed.
+        on tx_ready and tx_valid do
+          tx_ready = 0
           load_byte()
           next :low
         end
@@ -129,8 +178,9 @@ defmodule Hw.SPI.Master do
         on half_tick do
           sck_reg = 0
           div_cnt = 0
+          rx_shift_t = rx_trailing
           on bit_cnt == 7 do
-            rx_data_reg  = rx_shift
+            rx_data_reg  = rx_final
             rx_valid_reg = 1
             on cs_hold_reg == 0 do
               csn_reg = 1

@@ -150,7 +150,10 @@ defmodule Hw.AXI4Slave do
   end
 
   # FSM for burst control
-  fsm :state, clock: :aclk, init: :idle do
+  # reset: :rst is load-bearing — see the note in Hw.AXI4Master. Without it a
+  # reset clears the FIFO/beat state while this FSM stays mid-burst with
+  # RREADY asserted.
+  fsm :state, clock: :aclk, reset: :rst, init: :idle do
     defaults do
       m_axi_arvalid = 0
       m_axi_rready = 0
@@ -163,16 +166,35 @@ defmodule Hw.AXI4Slave do
         on can_burst == 1, next: :send_addr
 
       :send_addr ->
-        # Present read address, wait for ready
+        # Present read address, wait for ready.
+        #
+        # ARVALID is registered and therefore LOW on the first cycle here.
+        # Testing ARREADY alone advances to :recv_data against a slave that
+        # parks ARREADY high, having never issued an address — then we wait
+        # forever for read data nobody asked for. Zynq's PS ports do park
+        # ARREADY high. Clearing it on exit prevents a duplicate burst.
         m_axi_araddr = current_addr
         m_axi_arvalid = 1
-        on m_axi_arready == 1, next: :recv_data
+        on m_axi_arvalid == 1 and m_axi_arready == 1 do
+          m_axi_arvalid = 0
+          next :recv_data
+        end
 
       :recv_data ->
-        # Receive data beats
+        # Receive data beats.
+        #
+        # RREADY must be in the guard: on a single-beat burst RVALID and RLAST
+        # can both be high on the first cycle, while RREADY is still low — the
+        # old code returned to :idle with that beat unaccepted and the slave
+        # still holding it. in_recv_data is cleared alongside RREADY because
+        # the FIFO write below is gated on it.
         m_axi_rready = 1
         in_recv_data = 1
-        on m_axi_rvalid == 1 and m_axi_rlast == 1, next: :idle
+        on m_axi_rready == 1 and m_axi_rvalid == 1 and m_axi_rlast == 1 do
+          m_axi_rready = 0
+          in_recv_data = 0
+          next :idle
+        end
     end
   end
 

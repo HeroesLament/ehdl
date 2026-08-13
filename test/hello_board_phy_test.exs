@@ -28,10 +28,7 @@ defmodule HelloBoard.PHYTest do
     {:ok, sim} = Hw.Sim.start(HelloBoard.Top)
     Hw.Sim.set(sim, :pll_locked, 1)
     Hw.Sim.set(sim, :wifi_txd, 1)
-    Hw.Sim.force_reg(sim, :rst_sync, %{
-      rst_sync_sync0: 1, rst_sync_sync1: 1,
-      rst_sync_counter: 1023, rst_sync_ready: 1,
-    })
+    HelloBoard.SimSetup.release_reset(sim)
     Hw.Sim.force_reg(sim, :cdc, %{
       cdc_dev_state: 2, cdc_ep1_toggle: 0,
       cdc_ep1_in_busy: 0, cdc_out_valid: 0, cdc_out_byte: 0,

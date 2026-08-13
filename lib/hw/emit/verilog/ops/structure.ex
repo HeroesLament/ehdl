@@ -33,16 +33,18 @@ defmodule Hw.Emit.Verilog.Ops.Structure do
     end
   end
 
-  # casez form of a case-derived mux. Semantically identical to emit_mux_always
-  # (out = default; then per-arm overrides) but expressed as one casez the
-  # synthesizer decodes ONCE and parallelizes. emit_mux_always is LAST-match-wins
-  # (each `if` may override an earlier one); casez is FIRST-match-wins, so the
-  # arms are presented in REVERSE order to preserve identical behaviour.
+  # casez form of a case-derived mux. Semantically identical to emit_mux_always,
+  # but expressed as one casez the synthesizer decodes ONCE and parallelizes.
+  #
+  # Arm order is preserved. casez is first-match-wins, which is now what
+  # Ops.Mux means everywhere (see emit_mux_always). This used to emit the arms
+  # REVERSED, to match an emit_mux_always that was last-match-wins — a
+  # divergence that made the two Verilog forms of the same op disagree with each
+  # other and with both simulators.
   defp emit_casez(%Mux{output: out, selector: sel, cases: cases, patterns: patterns, default: default}) do
     arms =
       cases
       |> Enum.zip(patterns)
-      |> Enum.reverse()
       |> Enum.map(fn {{_cond, val}, {value, care, width}} ->
         "      #{casez_bits(value, care, width)}: #{out.name} = #{emit_value(val)};"
       end)
@@ -82,16 +84,36 @@ defmodule Hw.Emit.Verilog.Ops.Structure do
     "#{emit_value(cond)} ? #{emit_value(val)} : #{emit_mux_ternary(rest, default)}"
   end
 
+  # FIRST-match-wins, as an else-if chain.
+  #
+  # `Ops.Mux.cases` is an ordered, priority-encoded list: the first arm whose
+  # condition holds supplies the value. Every other lowering of it already
+  # agreed on that — the ternary form (<=2 arms), the Elixir interpreter
+  # (Enum.find_value), the Rust NIF (iter().find_map) and casez. This one did
+  # not: it emitted a flat sequence of independent `if`s over a pre-assigned
+  # default, so the LAST matching arm won.
+  #
+  # That divergence is a sim/synth split, which is the worst kind of bug this
+  # compiler can produce — the design passes simulation and misbehaves on
+  # silicon. A trailing always-true arm (an `<<_::N>>` catch-all) clobbered
+  # every specific arm above it back to the hold value, which silently pinned
+  # the whole USB CDC dispatch on real hardware while every test passed. The
+  # elaborator worked around it by rerouting catch-all arms into the default
+  # slot; with the semantics unified here, that workaround is no longer load
+  # bearing and no longer hides a leading catch-all's shadowing.
   defp emit_mux_always(out, cases, default) do
-    lines = [
-      "  always @(*) begin",
-      "    #{out.name} = #{emit_value(default)};"
-    ]
+    arms =
+      cases
+      |> Enum.with_index()
+      |> Enum.map(fn {{cond, val}, i} ->
+        keyword = if i == 0, do: "if", else: "else if"
+        "    #{keyword} (#{emit_value(cond)}) #{out.name} = #{emit_value(val)};"
+      end)
 
-    case_lines = Enum.map(cases, fn {cond, val} ->
-      "    if (#{emit_value(cond)}) #{out.name} = #{emit_value(val)};"
-    end)
-
-    Enum.join(lines ++ case_lines ++ ["  end"], "\n")
+    Enum.join(
+      ["  always @(*) begin", "    #{out.name} = #{emit_value(default)};"] ++
+        arms ++ ["  end"],
+      "\n"
+    )
   end
 end
