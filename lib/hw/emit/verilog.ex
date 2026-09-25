@@ -27,6 +27,8 @@ defmodule Hw.Emit.Verilog do
       design
       |> Design.finalize()
       |> maybe_optimize(opts)
+      # Reserved-word nets/memories renamed; reserved port names raise.
+      |> Hw.Emit.Verilog.Names.legalize()
 
     # Default keep policy: clock_domain_preservation only.
     #
@@ -146,7 +148,19 @@ defmodule Hw.Emit.Verilog do
     end)
 
     input_decls = Enum.map(inputs, &emit_port_decl(&1, :input))
-    output_decls = Enum.map(outputs, &emit_port_decl(&1, :output))
+    # An output assigned procedurally (a registered output, or a >2-arm mux
+    # rendered as always @(*)) must be `output reg`: a bare `output` is a net,
+    # and procedural assignment to a net is illegal Verilog. Yosys tolerated
+    # it; iverilog rejects it (found 2026-09-24, Hw.AXIHPWriter's `bursts`).
+    procedural = procedural_names(design)
+
+    output_decls =
+      Enum.map(outputs, fn sig ->
+        if MapSet.member?(procedural, sig.name),
+          do: emit_port_decl(sig, :"output reg"),
+          else: emit_port_decl(sig, :output)
+      end)
+
     inout_decls = Enum.map(inouts, &emit_port_decl(&1, :inout))
 
     clock_decls ++ input_decls ++ output_decls ++ inout_decls
@@ -175,23 +189,31 @@ defmodule Hw.Emit.Verilog do
 
   # --- Internal Wire Declarations ---
 
+  # Every signal the emitted Verilog assigns PROCEDURALLY, i.e. inside an
+  # always block, and which therefore must be declared `reg`:
+  #   * Reg outputs (clocked always, Sequential.emit_sequential_logic);
+  #   * synchronous MemRead outputs (clocked always, emit_memory_logic);
+  #   * combinational ops the renderer emits as `always @(*)`, as decided by
+  #     Structure.procedural?/1 (the same predicate the renderer uses).
+  # One set, used for internals AND output ports, so the two can't disagree.
+  defp procedural_names(%Design{ops: ops}) do
+    ops
+    |> Enum.filter(fn
+      %Reg{} -> true
+      %MemRead{clock: clk} -> clk != nil
+      op -> Hw.Emit.Verilog.Ops.Structure.procedural?(op)
+    end)
+    |> MapSet.new(& &1.output.name)
+  end
+
   defp emit_internal_wires(%Design{} = design, kept) do
     internals = Design.internals(design)
     clock_names = MapSet.new(design.clocks, & &1.name)
 
-    # Signals driven by Reg ops must be declared as `reg` not `wire`.
-    # A synchronous MemRead (clock != nil) is also procedurally assigned with
-    # `<=` inside a clocked always block (see Sequential.emit_memory_logic), so
-    # its output signal must be `reg` too — declaring it `wire` is illegal
-    # Verilog (procedural assignment to a net) even if some tools tolerate it.
-    reg_driven =
-      design.ops
-      |> Enum.filter(fn
-        %Reg{} -> true
-        %MemRead{clock: clk} -> clk != nil
-        _ -> false
-      end)
-      |> MapSet.new(& &1.output.name)
+    # Signals assigned procedurally must be declared `reg` not `wire`. See
+    # procedural_names/1. Declaring them `wire` is illegal Verilog (procedural
+    # assignment to a net) even if some tools tolerate it.
+    reg_driven = procedural_names(design)
 
     case internals do
       [] -> []

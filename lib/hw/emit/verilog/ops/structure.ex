@@ -22,10 +22,24 @@ defmodule Hw.Emit.Verilog.Ops.Structure do
 
   def emit(%Mux{} = op, _casez?), do: emit_priority(op)
 
+  @doc """
+  True when `emit/1,2` renders this op as an `always @(*)` block rather than a
+  continuous `assign`, so its output must be DECLARED `reg` (or `output reg`).
+
+  This is the single source of truth for that choice: both the priority
+  if-chain (emit_mux_always) and casez are gated on `length(cases) > 2`, and
+  Hw.Emit.Verilog's declaration pass asks this function instead of repeating
+  the threshold. Declaring such a net `wire` is illegal Verilog (procedural
+  assignment to a net). Yosys tolerated it, iverilog rejects it; found
+  2026-09-24 on Hw.AXIHPWriter/Hw.AXIHPReader's FSM `_case_N` nets.
+  """
+  def procedural?(%Mux{cases: cases}) when length(cases) > 2, do: true
+  def procedural?(_), do: false
+
   # --- Mux Helpers ---
 
-  defp emit_priority(%Mux{output: out, cases: cases, default: default}) do
-    if length(cases) <= 2 do
+  defp emit_priority(%Mux{output: out, cases: cases, default: default} = op) do
+    if not procedural?(op) do
       expr = emit_mux_ternary(cases, default)
       "  assign #{out.name} = #{expr};"
     else
