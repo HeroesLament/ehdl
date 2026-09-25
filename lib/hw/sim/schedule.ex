@@ -524,7 +524,12 @@ defmodule Hw.Sim.Schedule do
         Enum.flat_map(cases, fn {k, v} -> signal_name(k) ++ signal_name(v) end) ++
         signal_name(default)
       %{inputs: inputs}                          -> Enum.flat_map(inputs, &signal_name/1)
-      _                                          -> []
+      # Blackbox stays opaque here, as before: closure walks must not pull a
+      # hard macro's output ports in as dependencies.
+      %Blackbox{}                                -> []
+      # Any other shape (shift amounts, extends, reductions, ...): structural,
+      # same reasoning as input_signal_names/1.
+      _                                          -> input_signal_names(op)
     end
   end
 
@@ -702,22 +707,17 @@ defmodule Hw.Sim.Schedule do
   # ---------------------------------------------------------------------------
 
   # Extract the output signal from an op
-  defp output_signal(%Assign{output: s}),  do: s
-  defp output_signal(%Add{output: s}),     do: s
-  defp output_signal(%Sub{output: s}),     do: s
-  defp output_signal(%Mux{output: s}),     do: s
-  defp output_signal(%Eq{output: s}),      do: s
-  defp output_signal(%Lt{output: s}),      do: s
-  defp output_signal(%Gt{output: s}),      do: s
-  defp output_signal(%BitAnd{output: s}),  do: s
-  defp output_signal(%BitOr{output: s}),   do: s
-  defp output_signal(%BitXor{output: s}),  do: s
-  defp output_signal(%BitNot{output: s}),  do: s
-  defp output_signal(%Slice{output: s}),   do: s
-  defp output_signal(%Concat{output: s}),  do: s
-  defp output_signal(%MemRead{output: s}), do: s
-  defp output_signal(%Reg{output: s}),     do: s
-  defp output_signal(_),                   do: nil
+  # Structural, not enumerated. The previous per-op clause list covered only
+  # Assign/Add/Sub/Mux/Eq/Lt/Gt/bitwise/Slice/Concat/MemRead/Reg: every other
+  # single-output op (Gte, Lte, Neq, shifts, extends, Mul/Div/Mod, reductions,
+  # Popcount, ...) fell through to nil, so topo_sort never saw it as a
+  # producer and its consumers could be ordered BEFORE it. Found 2026-09-24 via
+  # Hw.AXIHPReader: `fill >= 128` (Gte) and `rlast != is_last_beat` (Neq) were
+  # read before produced; the full-ETS-snapshot env masked it by supplying
+  # one-edge-stale values, and the M0 targeted env exposed it. Blackbox and
+  # Tristate have no :output field and are handled in output_signal_names/1.
+  defp output_signal(%{output: %Signal{} = s}), do: s
+  defp output_signal(_),                        do: nil
 
   defp output_signal_names(op) do
     case output_signal(op) do
@@ -764,7 +764,32 @@ defmodule Hw.Sim.Schedule do
   defp input_signal_names(%Tristate{output_value: ov, output_enable: oe}) do
     sig_names([ov, oe])
   end
+  # Structural fallback for every other op: all Signals anywhere in the struct
+  # except the :output field. Replaces a `_ -> []` that silently gave Gte,
+  # Lte, Neq, shifts, extends, Mul/Div/Mod, reductions, Popcount, MemWrite etc.
+  # NO inputs, so topo_sort placed them before their producers (see
+  # output_signal/1). The explicit clauses above stay for the ops whose shape
+  # a generic walk would get wrong: Reg (clock is a dependency), MemRead
+  # (memory is an atom), Blackbox (ports are in+out), Tristate (input_value is
+  # its output).
+  defp input_signal_names(op) when is_struct(op) do
+    op
+    |> Map.from_struct()
+    |> Map.drop([:output])
+    |> deep_signals([])
+    |> Enum.uniq()
+  end
   defp input_signal_names(_), do: []
+
+  defp deep_signals(%Signal{name: n}, acc), do: [n | acc]
+  defp deep_signals(%_{} = struct, acc), do: deep_signals(Map.from_struct(struct), acc)
+  defp deep_signals(%{} = map, acc),
+    do: Enum.reduce(map, acc, fn {_k, v}, a -> deep_signals(v, a) end)
+  defp deep_signals(list, acc) when is_list(list),
+    do: Enum.reduce(list, acc, &deep_signals/2)
+  defp deep_signals({a, b}, acc), do: deep_signals(a, deep_signals(b, acc))
+  defp deep_signals(_, acc), do: acc
+
 
   defp sig_names(list) do
     list
