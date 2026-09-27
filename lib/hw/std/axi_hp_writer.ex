@@ -208,7 +208,16 @@ defmodule Hw.AXIHPWriter do
     m_axi_awprot = 0
     m_axi_awqos = 0
     m_axi_wstrb = 0xFF
-    m_axi_bready = 1
+    # BREADY follows the registered in_wait_resp flag, exactly as the
+    # reader's RREADY follows in_recv. It was a constant 1, while B was only
+    # *consumed* when in_wait_resp == 1 (from the second cycle of
+    # :wait_resp). A slave returning BVALID on the first cycle of
+    # :wait_resp completed the handshake against BREADY=1 and dropped
+    # BVALID, and the engine then waited forever. The PS's B latency is many
+    # cycles, which is why silicon never hit it; a zero-latency slave in
+    # test/support/verilog/tb_hp_loop.v deadlocked on the first burst
+    # (2026-09-26). BREADY may legally wait for BVALID (AXI A3.3.1).
+    m_axi_bready = in_wait_resp
   end
 
   # The handshake structure below, including which side of each handshake a
