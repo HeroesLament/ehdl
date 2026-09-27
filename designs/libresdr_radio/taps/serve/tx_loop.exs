@@ -19,6 +19,12 @@
 # bank 3 = head_addr. STATUS0 (AXI 0x1C): [22:10] read_ptr[19:7],
 # [30:23] bursts[7:0], [31] underflow sticky.
 #   Nervezynq.TxLoop.dma_gate()       # ring = marked pattern, cyclic, scored
+#
+# Over the air (dr-a TX, dr-b RX, as RF_FIRST_LIGHT.md; needs tx_tone.exs):
+#   TxTone.set_tx_lo(2_413_000_000)
+#   TxLoop.dma_fill_tone()            # +Fs/32 complex tone, TX1 only
+#   TxLoop.dma_burst(3000)            # keyed from DDR, unkeys itself
+#   TxLoop.dma_last()                 # status recorded at unkey
 
 defmodule Nervezynq.TxLoop do
   import Bitwise
@@ -207,6 +213,105 @@ defmodule Nervezynq.TxLoop do
   def dma_stop do
     dma_ctrl(run: false)
   end
+
+  # --- over the air ------------------------------------------------------------
+  # Same limits as TxTone: no PA on this board, but 0 dB attenuation is still
+  # the chip's full output; bursts are bounded and unkey on the board itself.
+  @dma_min_atten_db 10.0
+  @dma_max_burst_ms 10_000
+  @ring_frames 131_072
+
+  @doc """
+  Fill the ring with a complex tone on TX1: `cycles` per 131072-frame ring
+  (4096 = Fs/32, 250 kHz at 8 Msps; an integer keeps the loop seamless),
+  peak `amp` of 2047 (1024 = -6 dBFS). I = cos, Q = sin: positive
+  frequency if the chip's I/Q convention is the usual one. TX2 = 0.
+  """
+  def dma_fill_tone(cycles \\ 4096, amp \\ 1024) when amp in 0..2047 do
+    %{tx: tx} = dma_ports()
+    period = div(@ring_frames, Integer.gcd(cycles, @ring_frames))
+
+    table =
+      for k <- 0..(period - 1) do
+        ph = 2 * :math.pi() * rem(cycles * k, @ring_frames) / @ring_frames
+        i = round(amp * :math.cos(ph)) &&& 0xFFF
+        q = round(amp * :math.sin(ph)) &&& 0xFFF
+        [i ||| q <<< 12, 0]
+      end
+      |> List.to_tuple()
+
+    0..(@ring_frames - 1)
+    |> Enum.chunk_every(2048)
+    |> Enum.each(fn chunk ->
+      vals = Enum.flat_map(chunk, &elem(table, rem(&1, period)))
+      :ok = PortWire.transact(tx, {:write_block, hd(chunk) * 8, vals}, 15_000)
+    end)
+
+    {:ok, %{cycles: cycles, amp: amp, period_frames: period}}
+  end
+
+  @doc """
+  Key from DDR for `ms`, then unkey, enforced on this board (TxTone.burst/2's
+  rule). The unkey process is armed before the ENSM leaves ALERT. Primes the
+  cyclic ring, selects the DMA source, sets `:atten_db` (default 30.0,
+  floor #{@dma_min_atten_db} unless `force: true`), then ENSM -> TX.
+
+  Also sets REG_TX_CLOCK_DATA_DELAY (0x007) to `:tx_delay` (default the
+  measured 0x08) and leaves it there: the boot value 0x00 corrupts the
+  falling-edge words, which on air showed as a -7 dBc image, Fs/4 spurs and
+  a 4.5 dB higher floor (dr-a -> dr-b, 2026-09-26). gate/1 and dma_gate/1
+  restore whatever was there before them, i.e. 0x00 on current firmware.
+  """
+  def dma_burst(ms, opts \\ []) when is_integer(ms) and ms > 0 and ms <= @dma_max_burst_ms do
+    atten = Keyword.get(opts, :atten_db, 30.0)
+
+    if atten < @dma_min_atten_db and not Keyword.get(opts, :force, false) do
+      {:error, {:atten_below_floor, atten, @dma_min_atten_db}}
+    else
+      {:ok, _} = Nervezynq.TxTone.set_tx_atten(atten)
+      {:ok, _} = AD9363.write_verify(0x007, Keyword.get(opts, :tx_delay, @tx_delay_measured))
+      AD9363.bist_tone(:disable)
+      AD9363.bist_prbs(:disable)
+      {:ok, _} = loopback(false)
+      dma_stop()
+      Process.sleep(2)
+      dma_head(@tx_base)
+      dma_ctrl(run: true, enable: true, cyclic: true)
+      Process.sleep(2)
+      primed = dma_status()
+      ctrl(enable: true)
+      dma_ctrl(run: true, enable: true, cyclic: true, dma: true, clear: true)
+      Process.sleep(1)
+      dma_ctrl(run: true, enable: true, cyclic: true, dma: true)
+
+      pid = spawn(fn -> Process.sleep(ms); dma_unkey() end)
+
+      case ENSM.set_state(:tx) do
+        {:ok, _} ->
+          {:ok, %{burst_ms: ms, primed: primed, ensm: ENSM.state(), reg_007: AD9363.read(0x007),
+                  tx_atten: Nervezynq.TxTone.tx_atten(), tx_lo_hz: Nervezynq.TxTone.tx_lo_freq(),
+                  unkey_pid: pid}}
+
+        err ->
+          dma_unkey()
+          err
+      end
+    end
+  end
+
+  @doc "Unkey: ENSM to ALERT first, record DMA status, stop DMA and the port, max attenuation."
+  def dma_unkey do
+    ENSM.set_state(:alert)
+    st = dma_status()
+    dma_stop()
+    ctrl([])
+    Nervezynq.TxTone.set_tx_atten(89.75)
+    r = %{status_at_unkey: st, ensm: ENSM.state(), tx_atten: Nervezynq.TxTone.tx_atten()}
+    :persistent_term.put({__MODULE__, :last}, r)
+    {:ok, r}
+  end
+
+  def dma_last, do: :persistent_term.get({__MODULE__, :last}, nil)
 
   @doc "Score against the DMA frames: every field, the marker, and +1 continuity."
   def dma_score(%{ch1: ch1, ch2: ch2}) do
