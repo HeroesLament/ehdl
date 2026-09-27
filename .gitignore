@@ -98,3 +98,4 @@ designs/**/*.v
 designs/**/*.lpf
 designs/**/*.err
 designs/**/*.log
+designs/**/build_*/

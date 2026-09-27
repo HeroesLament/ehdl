@@ -17,10 +17,17 @@
 # Requires in env:   PRJXRAY_DB (openXC7 fork, NOT f4pga), XC7_CHIPDB
 
 defmodule LibreSDRRadio.Build do
-  @build_dir "designs/libresdr_radio/build"
-  @top_module LibreSDRRadio.Top
-  @top_name "libresdr_radio"
-  @xdc "designs/libresdr_radio/libresdr.xdc"
+  # Overridable so a second top (e.g. the HP0 loopback gate, hp_loop.ex)
+  # builds with the same flow without touching the radio's build dir or
+  # winning_seed.txt. Defaults are the radio top, unchanged:
+  #   TOP_MODULE=LibreSDRRadio.HPLoop.Top TOP_NAME=hp_loop \
+  #   XDC=designs/libresdr_radio/hp_loop.xdc \
+  #   BUILD_DIR=designs/libresdr_radio/build_hploop \
+  #   mix run designs/libresdr_radio/build.exs --sweep 0..15
+  @build_dir System.get_env("BUILD_DIR", "designs/libresdr_radio/build")
+  @top_module Module.concat([System.get_env("TOP_MODULE", "LibreSDRRadio.Top")])
+  @top_name System.get_env("TOP_NAME", "libresdr_radio")
+  @xdc System.get_env("XDC", "designs/libresdr_radio/libresdr.xdc")
 
   @part "xc7z020clg400-1"
   @device "xc7z020"
