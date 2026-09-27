@@ -169,6 +169,24 @@ defmodule LibreSDRRadio.Top do
   input :ad9363_rx_d5_p, 1
   input :ad9363_rx_d5_n, 1
 
+  # AD9363 LVDS transmit bus (bank 34, LVDS_25). See libresdr.xdc.
+  output :ad9363_fb_clk_p, 1
+  output :ad9363_fb_clk_n, 1
+  output :ad9363_tx_frame_p, 1
+  output :ad9363_tx_frame_n, 1
+  output :ad9363_tx_d0_p, 1
+  output :ad9363_tx_d0_n, 1
+  output :ad9363_tx_d1_p, 1
+  output :ad9363_tx_d1_n, 1
+  output :ad9363_tx_d2_p, 1
+  output :ad9363_tx_d2_n, 1
+  output :ad9363_tx_d3_p, 1
+  output :ad9363_tx_d3_n, 1
+  output :ad9363_tx_d4_p, 1
+  output :ad9363_tx_d4_n, 1
+  output :ad9363_tx_d5_p, 1
+  output :ad9363_tx_d5_n, 1
+
   # --- PS7 <-> AXI-Lite slave wiring ----------------------------------------
   wire :awid, 12
   wire :awaddr, 32
@@ -556,6 +574,61 @@ defmodule LibreSDRRadio.Top do
   wire :sb_rd_ptr, 11, init: 0
   wire :sb_rd_idx, 10
 
+
+  # --- TX data port (Hw.AD936xTxPort -> ODDR -> OBUFDS), DATA_CLK domain ------
+  #
+  # Test-pattern source only, for the AD9363's internal data-port loopback
+  # gate (REG_OBSERVE_CONFIG 0x3F5 bit 0: TX data port -> RX data port, no
+  # RF). EMIO bank 2 control, quasi-static, each bit through Hw.CDC.Sync2:
+  #   [3] tx_enable  [4] half_swap  [5] iq_swap  [6] chan_swap
+  #   [7] fb_clk phase: 0 = edge-aligned (ODDR D1=1,D2=0), 1 = inverted
+  # Pattern per frame, ctr advancing once per frame on sample_req:
+  #   I1 = ctr   Q1 = ~ctr   I2 = {ctr[5:0], ctr[11:6]}   Q2 = 0xA5C
+  # Every field distinct and every half distinct, so a capture identifies
+  # half order, I/Q order and channel order unambiguously.
+  wire :tx_en_axi, 1
+  wire :tx_hs_axi, 1
+  wire :tx_iq_axi, 1
+  wire :tx_ch_axi, 1
+  wire :tx_fb_axi, 1
+  wire :tx_en, 1
+  wire :tx_hs, 1
+  wire :tx_iq, 1
+  wire :tx_ch, 1
+  wire :tx_fb, 1
+  wire :tx_ctr, 12, init: 0
+  wire :tx_i1, 12
+  wire :tx_q1, 12
+  wire :tx_i2, 12
+  wire :tx_q2, 12
+  wire :tx_req, 1
+  wire :tx_rise, 6
+  wire :tx_fall, 6
+  wire :tx_fr_rise, 1
+  wire :tx_fr_fall, 1
+  wire :tx_fb_d1, 1
+  wire :tx_fb_d2, 1
+  wire :tx_d0_r, 1
+  wire :tx_d0_f, 1
+  wire :tx_d1_r, 1
+  wire :tx_d1_f, 1
+  wire :tx_d2_r, 1
+  wire :tx_d2_f, 1
+  wire :tx_d3_r, 1
+  wire :tx_d3_f, 1
+  wire :tx_d4_r, 1
+  wire :tx_d4_f, 1
+  wire :tx_d5_r, 1
+  wire :tx_d5_f, 1
+  wire :fb_clk_q, 1
+  wire :tx_frame_q, 1
+  wire :tx_d0_q, 1
+  wire :tx_d1_q, 1
+  wire :tx_d2_q, 1
+  wire :tx_d3_q, 1
+  wire :tx_d4_q, 1
+  wire :tx_d5_q, 1
+
   instance :ps, Hw.PS7HP,
     fclk_clk0: :fclk_clk0,
     fclk_clk1: :fclk_clk1,
@@ -686,6 +759,77 @@ defmodule LibreSDRRadio.Top do
 
   instance :pk_lost_cdc, Hw.CDC.Sync2,
     clk_dst: :axi_clk, rst: :axi_rst, data_in: :pk_sync_lost, data_out: :pk_sync_lost_sync
+
+  instance :tx_en_cdc, Hw.CDC.Sync2,
+    clk_dst: :data_clk, rst: :zero, data_in: :tx_en_axi, data_out: :tx_en
+
+  instance :tx_hs_cdc, Hw.CDC.Sync2,
+    clk_dst: :data_clk, rst: :zero, data_in: :tx_hs_axi, data_out: :tx_hs
+
+  instance :tx_iq_cdc, Hw.CDC.Sync2,
+    clk_dst: :data_clk, rst: :zero, data_in: :tx_iq_axi, data_out: :tx_iq
+
+  instance :tx_ch_cdc, Hw.CDC.Sync2,
+    clk_dst: :data_clk, rst: :zero, data_in: :tx_ch_axi, data_out: :tx_ch
+
+  instance :tx_fb_cdc, Hw.CDC.Sync2,
+    clk_dst: :data_clk, rst: :zero, data_in: :tx_fb_axi, data_out: :tx_fb
+
+  instance :txport, Hw.AD936xTxPort,
+    clk: :data_clk, enable: :tx_en,
+    i1: :tx_i1, q1: :tx_q1, i2: :tx_i2, q2: :tx_q2,
+    half_swap: :tx_hs, iq_swap: :tx_iq, chan_swap: :tx_ch,
+    d_rise: :tx_rise, d_fall: :tx_fall,
+    frame_rise: :tx_fr_rise, frame_fall: :tx_fr_fall, sample_req: :tx_req
+
+  instance :fb_clk_oddr, Hw.Xilinx.ODDR,
+    DDR_CLK_EDGE: "SAME_EDGE", INIT: 0, SRTYPE: "SYNC",
+    c: :data_clk, ce: :one, d1: :tx_fb_d1, d2: :tx_fb_d2, r: :zero, s: :zero, q: :fb_clk_q
+  instance :fb_clk_obuf, Hw.Xilinx.OBUFDS,
+    i: :fb_clk_q, o: :ad9363_fb_clk_p, ob: :ad9363_fb_clk_n
+
+  instance :tx_frame_oddr, Hw.Xilinx.ODDR,
+    DDR_CLK_EDGE: "SAME_EDGE", INIT: 0, SRTYPE: "SYNC",
+    c: :data_clk, ce: :one, d1: :tx_fr_rise, d2: :tx_fr_fall, r: :zero, s: :zero, q: :tx_frame_q
+  instance :tx_frame_obuf, Hw.Xilinx.OBUFDS,
+    i: :tx_frame_q, o: :ad9363_tx_frame_p, ob: :ad9363_tx_frame_n
+
+  instance :tx_d0_oddr, Hw.Xilinx.ODDR,
+    DDR_CLK_EDGE: "SAME_EDGE", INIT: 0, SRTYPE: "SYNC",
+    c: :data_clk, ce: :one, d1: :tx_d0_r, d2: :tx_d0_f, r: :zero, s: :zero, q: :tx_d0_q
+  instance :tx_d0_obuf, Hw.Xilinx.OBUFDS,
+    i: :tx_d0_q, o: :ad9363_tx_d0_p, ob: :ad9363_tx_d0_n
+
+  instance :tx_d1_oddr, Hw.Xilinx.ODDR,
+    DDR_CLK_EDGE: "SAME_EDGE", INIT: 0, SRTYPE: "SYNC",
+    c: :data_clk, ce: :one, d1: :tx_d1_r, d2: :tx_d1_f, r: :zero, s: :zero, q: :tx_d1_q
+  instance :tx_d1_obuf, Hw.Xilinx.OBUFDS,
+    i: :tx_d1_q, o: :ad9363_tx_d1_p, ob: :ad9363_tx_d1_n
+
+  instance :tx_d2_oddr, Hw.Xilinx.ODDR,
+    DDR_CLK_EDGE: "SAME_EDGE", INIT: 0, SRTYPE: "SYNC",
+    c: :data_clk, ce: :one, d1: :tx_d2_r, d2: :tx_d2_f, r: :zero, s: :zero, q: :tx_d2_q
+  instance :tx_d2_obuf, Hw.Xilinx.OBUFDS,
+    i: :tx_d2_q, o: :ad9363_tx_d2_p, ob: :ad9363_tx_d2_n
+
+  instance :tx_d3_oddr, Hw.Xilinx.ODDR,
+    DDR_CLK_EDGE: "SAME_EDGE", INIT: 0, SRTYPE: "SYNC",
+    c: :data_clk, ce: :one, d1: :tx_d3_r, d2: :tx_d3_f, r: :zero, s: :zero, q: :tx_d3_q
+  instance :tx_d3_obuf, Hw.Xilinx.OBUFDS,
+    i: :tx_d3_q, o: :ad9363_tx_d3_p, ob: :ad9363_tx_d3_n
+
+  instance :tx_d4_oddr, Hw.Xilinx.ODDR,
+    DDR_CLK_EDGE: "SAME_EDGE", INIT: 0, SRTYPE: "SYNC",
+    c: :data_clk, ce: :one, d1: :tx_d4_r, d2: :tx_d4_f, r: :zero, s: :zero, q: :tx_d4_q
+  instance :tx_d4_obuf, Hw.Xilinx.OBUFDS,
+    i: :tx_d4_q, o: :ad9363_tx_d4_p, ob: :ad9363_tx_d4_n
+
+  instance :tx_d5_oddr, Hw.Xilinx.ODDR,
+    DDR_CLK_EDGE: "SAME_EDGE", INIT: 0, SRTYPE: "SYNC",
+    c: :data_clk, ce: :one, d1: :tx_d5_r, d2: :tx_d5_f, r: :zero, s: :zero, q: :tx_d5_q
+  instance :tx_d5_obuf, Hw.Xilinx.OBUFDS,
+    i: :tx_d5_q, o: :ad9363_tx_d5_p, ob: :ad9363_tx_d5_n
+
 
   # The domain crossing itself — Hw.StreamBRAMFIFO's logic INLINED here
   # rather than instantiated: the elaborator cannot resolve a component-
@@ -959,6 +1103,31 @@ defmodule LibreSDRRadio.Top do
     dma_enable = emio_out[0..0]
     src_sel = emio_out[1..1]
     stat_clear = emio_out[2..2]
+
+    # TX data port control (see the TX wire block).
+    tx_en_axi = emio_out[3..3]
+    tx_hs_axi = emio_out[4..4]
+    tx_iq_axi = emio_out[5..5]
+    tx_ch_axi = emio_out[6..6]
+    tx_fb_axi = emio_out[7..7]
+    tx_i1 = tx_ctr
+    tx_q1 = bnot(tx_ctr)
+    tx_i2 = {tx_ctr[5..0], tx_ctr[11..6]}
+    tx_q2 = 0xA5C
+    tx_fb_d1 = bnot(tx_fb)
+    tx_fb_d2 = tx_fb
+    tx_d0_r = tx_rise[0..0]
+    tx_d0_f = tx_fall[0..0]
+    tx_d1_r = tx_rise[1..1]
+    tx_d1_f = tx_fall[1..1]
+    tx_d2_r = tx_rise[2..2]
+    tx_d2_f = tx_fall[2..2]
+    tx_d3_r = tx_rise[3..3]
+    tx_d3_f = tx_fall[3..3]
+    tx_d4_r = tx_rise[4..4]
+    tx_d4_f = tx_fall[4..4]
+    tx_d5_r = tx_rise[5..5]
+    tx_d5_f = tx_fall[5..5]
 
     # The packer only runs when the stream is enabled AND selected; SEQ
     # restarts from 0 on every enable, so a stream begins self-labelled.
@@ -1322,4 +1491,12 @@ defmodule LibreSDRRadio.Top do
       end
     end
   end
+
+  # TX test-pattern counter: one step per frame, on the framer's request.
+  on :data_clk do
+    if tx_req == 1 do
+      tx_ctr = tx_ctr + 1
+    end
+  end
+
 end

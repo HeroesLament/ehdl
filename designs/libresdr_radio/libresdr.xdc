@@ -91,7 +91,7 @@ set_property IOSTANDARD LVDS_25 [get_ports ad9363_rx_d4_n]
 set_property IOSTANDARD LVDS_25 [get_ports ad9363_rx_d5_p]
 set_property IOSTANDARD LVDS_25 [get_ports ad9363_rx_d5_n]
 
-# --- LVDS transmit bus (NOT CONSTRAINED YET: no TX data port in the RTL) -----
+# --- LVDS transmit bus (Hw.AD936xTxPort -> ODDR -> OBUFDS) --------------------
 #
 # From zynqsdr_rev5.pdf page 16 (symbol U2C, bank 34), read visually and
 # cross-checked with pdftotext -bbox, 2026-09-26. All bank 34, so LVDS_25 like
@@ -106,3 +106,37 @@ set_property IOSTANDARD LVDS_25 [get_ports ad9363_rx_d5_n]
 #   T16/U17  IO_L9P/N_T1_DQS_34     TX_D3
 #   V12/W13  IO_L4P/N_T0_34         TX_D4
 #   V15/W15  IO_L10P/N_T1_34        TX_D5
+#
+# No DIFF_TERM here: these are outputs; termination is the AD9363's.
+set_property PACKAGE_PIN N18 [get_ports ad9363_fb_clk_p]
+set_property PACKAGE_PIN P19 [get_ports ad9363_fb_clk_n]
+set_property PACKAGE_PIN Y16 [get_ports ad9363_tx_frame_p]
+set_property PACKAGE_PIN Y17 [get_ports ad9363_tx_frame_n]
+set_property PACKAGE_PIN W14 [get_ports ad9363_tx_d0_p]
+set_property PACKAGE_PIN Y14 [get_ports ad9363_tx_d0_n]
+set_property PACKAGE_PIN T12 [get_ports ad9363_tx_d1_p]
+set_property PACKAGE_PIN U12 [get_ports ad9363_tx_d1_n]
+set_property PACKAGE_PIN U14 [get_ports ad9363_tx_d2_p]
+set_property PACKAGE_PIN U15 [get_ports ad9363_tx_d2_n]
+set_property PACKAGE_PIN T16 [get_ports ad9363_tx_d3_p]
+set_property PACKAGE_PIN U17 [get_ports ad9363_tx_d3_n]
+set_property PACKAGE_PIN V12 [get_ports ad9363_tx_d4_p]
+set_property PACKAGE_PIN W13 [get_ports ad9363_tx_d4_n]
+set_property PACKAGE_PIN V15 [get_ports ad9363_tx_d5_p]
+set_property PACKAGE_PIN W15 [get_ports ad9363_tx_d5_n]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_fb_clk_p]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_fb_clk_n]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_frame_p]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_frame_n]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d0_p]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d0_n]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d1_p]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d1_n]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d2_p]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d2_n]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d3_p]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d3_n]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d4_p]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d4_n]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d5_p]
+set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d5_n]
