@@ -27,9 +27,20 @@ defmodule Hw.Emit.Verilog.Ops.Bits do
     end
   end
 
+  # A 1-bit net is declared scalar (`wire x;`), and a part-select of a scalar
+  # is illegal Verilog: `x[0:0]` is rejected by iverilog ("can not select part
+  # of scalar") though yosys tolerates it. The elaborator produces exactly
+  # this for a 1-bit `hdl_case` subject (`hdl_case <<b::1>>` concatenates the
+  # subject, then slices bit 0). Bit 0 of a 1-bit signal is the signal.
+  # Found 2026-09-26 linting LibreSDRRadio.Top (src_sel_dclk) under iverilog.
   def emit(%Slice{output: out, input: inp, hi: hi, lo: lo}) do
     ensure_selectable!(out, inp)
-    "  assign #{out.name} = #{emit_value(inp)}[#{emit_index(hi)}:#{emit_index(lo)}];"
+
+    if scalar_bit0?(inp, hi, lo) do
+      "  assign #{out.name} = #{emit_value(inp)};"
+    else
+      emit_part_select(out, inp, hi, lo)
+    end
   end
 
   def emit(%Concat{output: out, inputs: inputs}) do
@@ -58,6 +69,15 @@ defmodule Hw.Emit.Verilog.Ops.Bits do
   defp emit_index(other), do: emit_value(other)
 
   # Extract an integer slice index when it is a concrete constant, else :dynamic.
+  defp scalar_bit0?(%Hw.IR.Types.Signal{width: 1}, hi, lo),
+    do: index_int(hi) == 0 and index_int(lo) == 0
+
+  defp scalar_bit0?(_, _, _), do: false
+
+  defp emit_part_select(out, inp, hi, lo) do
+    "  assign #{out.name} = #{emit_value(inp)}[#{emit_index(hi)}:#{emit_index(lo)}];"
+  end
+
   defp index_int(%Const{value: v}) when is_integer(v), do: v
   defp index_int(v) when is_integer(v), do: v
   defp index_int(_), do: :dynamic
