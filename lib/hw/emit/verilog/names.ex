@@ -65,8 +65,46 @@ defmodule Hw.Emit.Verilog.Names do
   def reserved?(name) when is_atom(name), do: reserved?(Atom.to_string(name))
   def reserved?(name) when is_binary(name), do: MapSet.member?(@reserved, name)
 
-  @doc "Rename reserved internal identifiers; raise on reserved port names."
+  @doc """
+  Rename reserved internal identifiers; raise on reserved port names;
+  deduplicate localparams.
+  """
   def legalize(%Design{} = design) do
+    design
+    |> dedupe_localparams()
+    |> legalize_names()
+  end
+
+  # FSM state localparams are emitted into the one flattened module, so two
+  # FSMs (or two instances of one component with an FSM) each contribute
+  # `IDLE`, `SEND_ADDR`, ... into the same scope: illegal redeclaration
+  # (found 2026-09-26, Hw.AXIHPReader + Hw.AXIHPWriter in one top). They
+  # are documentation only: the elaborator inlines state values into the
+  # FSM logic, and emit_localparams/1 is their sole consumer. So exact
+  # duplicates collapse to one, and a same-name/different-value collision
+  # is renamed <NAME>_2, _3, ... rather than dropped.
+  defp dedupe_localparams(%Design{localparams: lps} = design) do
+    {kept, _seen} =
+      Enum.reduce(lps, {[], %{}}, fn lp, {acc, seen} ->
+        case Map.get(seen, lp.name) do
+          nil ->
+            {[lp | acc], Map.put(seen, lp.name, [{lp.value, lp.width}])}
+
+          variants ->
+            if {lp.value, lp.width} in variants do
+              {acc, seen}
+            else
+              n = length(variants) + 1
+              renamed = %{lp | name: String.to_atom("#{lp.name}_#{n}")}
+              {[renamed | acc], Map.put(seen, lp.name, variants ++ [{lp.value, lp.width}])}
+            end
+        end
+      end)
+
+    %{design | localparams: Enum.reverse(kept)}
+  end
+
+  defp legalize_names(%Design{} = design) do
     ports =
       for %Signal{direction: d, name: n} <- design.signals,
           d in [:input, :output, :inout],

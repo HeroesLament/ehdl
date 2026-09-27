@@ -123,6 +123,15 @@ defmodule VerilogStrictTest do
       assert names == [:logic_r_, :logic_r]
     end
 
+    test "FSM localparams from two FSMs dedupe; same-name collisions are renamed" do
+      lp = fn n, v -> %Hw.IR.Types.Localparam{name: n, value: v, width: 2} end
+      d = %Design{name: :two_fsms,
+                  localparams: [lp.(:IDLE, 0), lp.(:SEND_ADDR, 1), lp.(:DONE, 2),
+                                lp.(:IDLE, 0), lp.(:SEND_ADDR, 1), lp.(:DONE, 3)]}
+      assert Names.legalize(d).localparams |> Enum.map(&{&1.name, &1.value}) ==
+               [IDLE: 0, SEND_ADDR: 1, DONE: 2, DONE_2: 3]
+    end
+
     test "Hw.StreamBRAMFIFO's memory `buf` is emitted under a legal name", %{dir: dir} do
       v = File.read!(emit!(Hw.StreamBRAMFIFO, dir))
       refute v =~ ~r/\bbuf\b/
