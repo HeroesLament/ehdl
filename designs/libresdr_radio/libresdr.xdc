@@ -140,3 +140,11 @@ set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d4_p]
 set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d4_n]
 set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d5_p]
 set_property IOSTANDARD LVDS_25 [get_ports ad9363_tx_d5_n]
+
+# Real clock constraints (2026-09-26). build.exs's --freq 50 was the only
+# target before, while FCLK0 (axi_clk) runs at 100 MHz: builds met it only by
+# placement luck (141 MHz estimated for build_txdma, 82.7 for the first
+# STF-detector build). DATA_CLK is 32 MHz at 8 Msps 2R2T; revisit if the
+# sample rate goes up.
+create_clock -period 10.000 [get_nets axi_clk]
+create_clock -period 31.250 [get_nets data_clk]

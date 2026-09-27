@@ -82,13 +82,37 @@ defmodule LibreSDRRadio.Build do
       # D-side LUT.
       #
       # Remove this when nextpnr-xilinx learns to route CE pins.
-      cmd!("""
-      yosys -p "read_verilog -sv #{v}; \
-                synth_xilinx -flatten -nocarry -abc9 -family xc7 -top top -run begin:map_ffs; \
-                dffunmap; \
-                synth_xilinx -flatten -nocarry -abc9 -family xc7 -top top -run map_ffs:; \
-                write_json #{json}"
+      #
+      # map_dsp is spelled out rather than run from synth_xilinx so that
+      # `xilinx_dsp` is skipped: every multiplier becomes a bare DSP48E1
+      # (AREG=BREG=MREG=PREG=0, OPMODE X=Y=M, Z=0), with its operand
+      # registers, post-adders and accumulators left in fabric. The packed
+      # forms (A1/A2 and P registers with fabric-driven CE/RST, PCIN
+      # cascades, P feedback) are not validated through nextpnr-xilinx's FASM
+      # writer on silicon: the first design to use them (Hw.StfDetector,
+      # 2026-09-26) ran bit-exact under iverilog on the same RTL and the same
+      # captured samples, yet its lag-16 sums drifted without bound on the
+      # board. The -D options are synth_xilinx's own for xc7.
+      ys = path("synth.ys")
+
+      File.write!(ys, """
+      read_verilog -sv #{v}
+      synth_xilinx -flatten -nocarry -abc9 -family xc7 -top top -run begin:map_dsp
+      memory_dff
+      techmap -map +/mul2dsp.v -map +/xilinx/xc7_dsp_map.v -D DSP_A_MAXWIDTH=25 -D DSP_B_MAXWIDTH=18 -D DSP_A_MAXWIDTH_PARTIAL=18 -D DSP_A_MINWIDTH=2 -D DSP_B_MINWIDTH=2 -D DSP_Y_MINWIDTH=9 -D DSP_SIGNEDONLY=1 -D DSP_NAME=$__MUL25X18
+      select a:mul2dsp
+      setattr -unset mul2dsp
+      opt_expr -fine
+      wreduce
+      select -clear
+      chtype -set $mul t:$__soft_mul
+      synth_xilinx -flatten -nocarry -abc9 -family xc7 -top top -run coarse:map_ffs
+      dffunmap
+      synth_xilinx -flatten -nocarry -abc9 -family xc7 -top top -run map_ffs:
+      write_json #{json}
       """)
+
+      cmd!("yosys -s #{ys}")
     end
 
     seeds =

@@ -252,7 +252,11 @@ defmodule Hw.Sim.Eval do
   def eval(%Replicate{output: out, input: input, count: count}, state, widths, _mems) do
     w = width(out, widths)
     v = read(input, state)
-    n = read(count, state)
+    # The elaborator stores count as a plain integer (a literal in the
+    # source); accept a Const/Signal too. read/2 on the integer raised
+    # FunctionClauseError, so replicate/2 was unsimulatable until
+    # Hw.StfDetector's sign extensions hit it (2026-09-26).
+    n = if is_integer(count), do: count, else: read(count, state)
     bit_w = if n > 0, do: div(w, n), else: w
     result = Enum.reduce(0..(n - 1), 0, fn i, acc -> acc ||| (v <<< (i * bit_w)) end)
     [{out.name, mask(result, w)}]

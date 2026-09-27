@@ -674,6 +674,33 @@ defmodule LibreSDRRadio.Top do
   wire :tb_live, 1
   wire :tb_word, 64
 
+  # --- RX: L-STF detector (Hw.StfDetector), DATA_CLK domain -------------------
+  #
+  # First OcuSync receive block in fabric (nervezynq notes/ocusync/02, 10):
+  # taps the packer's channel-1 samples on the same toggle edge that feeds the
+  # RX FIFO. EMIO bank 2:
+  #   [12] EMIO status mux: 0 = DMA status word (below), 1 = detector:
+  #        {det_count[15:0], det_pr[31:8], det_pi[31:8]}
+  #   [13] detector enable (also runs the packer without the RX DMA)
+  #   [23:16] energy gate code: emin = code << 6 (R units, 32 x mean |y|^2)
+  # Set the gate before enabling; it crosses quasi-statically.
+  wire :det_en_axi, 1
+  wire :det_en, 1
+  wire :emio_sel, 1
+  wire :det_emin, 32
+  wire :det_valid, 1
+  wire :det_i, 12
+  wire :det_q, 12
+  wire :det_pulse, 1
+  wire :det_pr, 32
+  wire :det_pi, 32
+  wire :det_r, 32
+  wire :det_count, 16
+  wire :det_pass, 1
+  wire :emio_dma, 64
+  wire :emio_det, 64
+  wire :pad26, 26
+
   # --- TX data port (Hw.AD936xTxPort -> ODDR -> OBUFDS), DATA_CLK domain ------
   #
   # Test-pattern source only, for the AD9363's internal data-port loopback
@@ -895,6 +922,23 @@ defmodule LibreSDRRadio.Top do
     word: :pk_word,
     word_toggle: :pk_toggle,
     sync_lost: :pk_sync_lost
+
+  instance :det_en_cdc, Hw.CDC.Sync2,
+    clk_dst: :data_clk, rst: :zero, data_in: :det_en_axi, data_out: :det_en
+
+  instance :stfdet, Hw.StfDetector,
+    clk: :data_clk,
+    enable: :det_en,
+    valid: :det_valid,
+    i: :det_i,
+    q: :det_q,
+    emin: :det_emin,
+    detect: :det_pulse,
+    det_pr: :det_pr,
+    det_pi: :det_pi,
+    det_r: :det_r,
+    det_count: :det_count,
+    pass: :det_pass
 
   # Control bits into the DATA_CLK domain: same no-reset rule as the rest
   # of that domain (rst: :zero, like cap_arm_cdc).
@@ -1347,7 +1391,16 @@ defmodule LibreSDRRadio.Top do
 
     # The packer only runs when the stream is enabled AND selected; SEQ
     # restarts from 0 on every enable, so a stream begins self-labelled.
-    pk_enable_axi = band(dma_enable, src_sel)
+    pk_enable_axi = bor(band(dma_enable, src_sel), det_en_axi)
+
+    # STF detector (see its wire block).
+    emio_sel = emio_out[12..12]
+    det_en_axi = emio_out[13..13]
+    pad26 = 0
+    det_emin = {pad26, emio_out[23..16], zero, zero, zero, zero, zero, zero}
+    det_valid = bxor(pk_toggle, pk_tog_d)
+    det_i = pk_word[11..0]
+    det_q = pk_word[23..12]
 
     # Disabled flushes the read side to empty (rd_ptr snaps to the synced
     # write pointer): every stream start begins empty, and a producer
@@ -1414,9 +1467,20 @@ defmodule LibreSDRRadio.Top do
     # Bits 41..43 are the EMIO smoke test: they prove the read path before
     # any DMA conclusion is drawn from the other fields. WACOUNT/WCOUNT vs
     # bursts is the "PL never issued / PS absorbed / stuck mid-burst" triage.
-    emio_in = {src_sel, pk_sync_lost_sync, overrun_sticky, overrun_ctr,
-               hp_wcount, hp_wacount, zero, one, alive_bit, hb_bit,
-               dma_bresp_errs, wptr_lo, dma_bursts}
+    emio_dma = {src_sel, pk_sync_lost_sync, overrun_sticky, overrun_ctr,
+                hp_wcount, hp_wacount, zero, one, alive_bit, hb_bit,
+                dma_bresp_errs, wptr_lo, dma_bursts}
+
+    # Detector view: DATA_CLK-domain values read asynchronously by the PS;
+    # software reads twice and keeps equal pairs (they change only on a
+    # detection).
+    emio_det = {det_count, det_pr[31..8], det_pi[31..8]}
+    emio_in = emio_dma
+
+    hdl_case <<emio_sel::1>> do
+      <<0::1>> -> emio_in = emio_dma
+      <<1::1>> -> emio_in = emio_det
+    end
   end
 
   # --- DATA_CLK domain -------------------------------------------------------
