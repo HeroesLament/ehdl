@@ -251,6 +251,27 @@ defmodule Nervezynq.TxLoop do
   end
 
   @doc """
+  Load a full 1 MB ring image (131072 little-endian u64 words, the format
+  `mix ocu.phy.ring` writes) from `url` into the TX ring. The DMA must not
+  be running (dma_stop/0 first; dma_burst/2 primes after this).
+  """
+  def dma_load(url) do
+    {:ok, {{_, 200, _}, _, bin}} =
+      :httpc.request(:get, {String.to_charlist(url), []}, [{:timeout, 30_000}], body_format: :binary)
+
+    true = byte_size(bin) == @tx_ring
+    dma_stop()
+    %{tx: tx} = dma_ports()
+
+    for off <- 0..(@tx_ring - 1)//16_384 do
+      vals = for <<w::little-32 <- binary_part(bin, off, 16_384)>>, do: w
+      :ok = PortWire.transact(tx, {:write_block, off, vals}, 15_000)
+    end
+
+    {:ok, %{bytes: byte_size(bin), md5: Base.encode16(:crypto.hash(:md5, bin), case: :lower)}}
+  end
+
+  @doc """
   Key from DDR for `ms`, then unkey, enforced on this board (TxTone.burst/2's
   rule). The unkey process is armed before the ENSM leaves ALERT. Primes the
   cyclic ring, selects the DMA source, sets `:atten_db` (default 30.0,
