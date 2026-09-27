@@ -45,13 +45,10 @@ set_property IOSTANDARD LVCMOS25 [get_ports ad9363_en_agc]
 #   W18/W19  IO_L22P/N_T3_34        RX_D4
 #   V16/W16  IO_L18P/N_T2_34        RX_D5
 #
-# RX_D1_N is V18 by inference, not by direct reading. The schematic's pin table
-# columns interleave badly enough that pdftotext lost that one net name, and
-# W17 -- the obvious guess from the neighbouring pattern -- does not exist on
-# clg400 at all. A differential pair must occupy both halves of one IO_L pair,
-# V17 is IO_L21P_T3_DQS_34, and package_pins.csv gives V18 as the matching
-# IO_L21N. Worth an eyeball on the real schematic before trusting samples from
-# that lane.
+# RX_D1_N is V18: first inferred (pdftotext lost the net name; V17 is
+# IO_L21P_T3_DQS_34 and package_pins.csv pairs it with V18), then CONFIRMED
+# 2026-09-26 by reading zynqsdr_rev5.pdf page 16 directly (symbol U2C: V18 =
+# IO_L21N_T3_DQS_34 = AD9363_RX_D1_N; also agrees with pdftotext -bbox rows).
 #
 # DIFF_TERM is set on every IBUFDS and nextpnr-xilinx silently ignores it: there
 # is no termination feature anywhere in the emitted FASM, and prjxray documents
@@ -93,3 +90,19 @@ set_property IOSTANDARD LVDS_25 [get_ports ad9363_rx_d4_p]
 set_property IOSTANDARD LVDS_25 [get_ports ad9363_rx_d4_n]
 set_property IOSTANDARD LVDS_25 [get_ports ad9363_rx_d5_p]
 set_property IOSTANDARD LVDS_25 [get_ports ad9363_rx_d5_n]
+
+# --- LVDS transmit bus (NOT CONSTRAINED YET: no TX data port in the RTL) -----
+#
+# From zynqsdr_rev5.pdf page 16 (symbol U2C, bank 34), read visually and
+# cross-checked with pdftotext -bbox, 2026-09-26. All bank 34, so LVDS_25 like
+# the receive bus. TX_D3_N was missing from the plain-text extraction (same
+# failure as RX_D1_N); the page shows U17 = IO_L9N_T1_DQS_34.
+#
+#   N18/P19  IO_L13P/N_T2_MRCC_34   FB_CLK    (PL -> AD9363, forwarded clock)
+#   Y16/Y17  IO_L7P/N_T1_34         TX_FRAME
+#   W14/Y14  IO_L8P/N_T1_34         TX_D0
+#   T12/U12  IO_L2P/N_T0_34         TX_D1
+#   U14/U15  IO_L11P/N_T1_SRCC_34   TX_D2
+#   T16/U17  IO_L9P/N_T1_DQS_34     TX_D3
+#   V12/W13  IO_L4P/N_T0_34         TX_D4
+#   V15/W15  IO_L10P/N_T1_34        TX_D5

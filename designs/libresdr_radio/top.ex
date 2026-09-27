@@ -451,6 +451,19 @@ defmodule LibreSDRRadio.Top do
   wire :hp_wacount, 6
   wire :hp_wcount, 8
 
+  # HP0 read channel: unused in this design, tied off (Hw.PS7HP's
+  # unbound-port rule). ARVALID and RREADY bind to `zero`; the AR fields
+  # are constant zeros so no PS input floats.
+  wire :hp_arid_tie, 6
+  wire :hp_araddr_tie, 32
+  wire :hp_arlen_tie, 4
+  wire :hp_arsize_tie, 2
+  wire :hp_arburst_tie, 2
+  wire :hp_arlock_tie, 2
+  wire :hp_arcache_tie, 4
+  wire :hp_arprot_tie, 3
+  wire :hp_arqos_tie, 4
+
   wire :emio_in, 64
   wire :emio_out, 64
 
@@ -594,6 +607,17 @@ defmodule LibreSDRRadio.Top do
     saxihp0_bready: :hp_bready,
     saxihp0_wacount: :hp_wacount,
     saxihp0_wcount: :hp_wcount,
+    saxihp0_arid: :hp_arid_tie,
+    saxihp0_araddr: :hp_araddr_tie,
+    saxihp0_arlen: :hp_arlen_tie,
+    saxihp0_arsize: :hp_arsize_tie,
+    saxihp0_arburst: :hp_arburst_tie,
+    saxihp0_arlock: :hp_arlock_tie,
+    saxihp0_arcache: :hp_arcache_tie,
+    saxihp0_arprot: :hp_arprot_tie,
+    saxihp0_arqos: :hp_arqos_tie,
+    saxihp0_arvalid: :zero,
+    saxihp0_rready: :zero,
     emio_gpio_i: :emio_in,
     emio_gpio_o: :emio_out
 
@@ -914,6 +938,17 @@ defmodule LibreSDRRadio.Top do
     # Top 1 MB of the DmaBuf reservation — see the wire-block comment.
     dma_base = 0x3FF00000
     dma_ring = 0x00100000
+
+    # HP0 read channel tie-offs (see the wire block).
+    hp_arid_tie = 0
+    hp_araddr_tie = 0
+    hp_arlen_tie = 0
+    hp_arsize_tie = 0
+    hp_arburst_tie = 0
+    hp_arlock_tie = 0
+    hp_arcache_tie = 0
+    hp_arprot_tie = 0
+    hp_arqos_tie = 0
 
     # EMIO bank 2 control bits (Linux gpiochip lines 54+). Until software
     # configures the bank direction and drives it, EMIOGPIOO reads 0 — the

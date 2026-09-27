@@ -53,14 +53,21 @@ defmodule Hw.PS7HP do
 
   - `emio_gpio_i`: drive it (zero-extend unused bits). Leaving a component
     input unbound leaves the blackbox input on an undriven net.
-  - The HP0 *read* channel is not exposed at all — its blackbox ports are
-    simply not listed, so nextpnr ties `SAXIHP0ARVALID` and friends to
-    constants. It gets added when `Hw.AXIHPReader` (TX direction) exists,
-    not before.
+  - The HP0 *read* channel (AR/R, for `Hw.AXIHPReader`, the TX direction)
+    is exposed as of 2026-09-26. Every instantiator must drive its inputs:
+    a design that does not read ties `saxihp0_arvalid` and
+    `saxihp0_rready` to 0 and the remaining AR fields to any constant
+    (`LibreSDRRadio.Top` does exactly this). ARVALID floating into the PS
+    is the hazard this component exists to avoid.
   - `SAXIHP0RDISSUECAP1EN` / `WRISSUECAP1EN` are likewise unlisted (tied by
     nextpnr): issuance capping is a QoS feature this design does not use.
 
   ## Observability
+
+  Read side, same triage: `saxihp0_racount` (pending read addresses) and
+  `saxihp0_rcount` (read data FIFO occupancy) against the reader's
+  `bursts` separate "never issued" from "PS returning slowly" from "PL not
+  draining".
 
   `saxihp0_wacount` (pending write addresses) and `saxihp0_wcount` (write
   data FIFO occupancy) come straight out of the PS7 macro. During bring-up,
@@ -150,6 +157,31 @@ defmodule Hw.PS7HP do
   output :saxihp0_wacount, 6
   output :saxihp0_wcount, 8
 
+  # --- S_AXI_HP0, read side (PL is the master; Hw.AXIHPReader) -----------------
+  # Widths from cells_xtra.v, same conventions as the write side: ID 6,
+  # LEN 4 (AXI3), SIZE 2, RDATA 64. RDISSUECAP1EN stays unlisted (QoS).
+  input :saxihp0_arid, 6
+  input :saxihp0_araddr, 32
+  input :saxihp0_arlen, 4
+  input :saxihp0_arsize, 2
+  input :saxihp0_arburst, 2
+  input :saxihp0_arlock, 2
+  input :saxihp0_arcache, 4
+  input :saxihp0_arprot, 3
+  input :saxihp0_arqos, 4
+  input :saxihp0_arvalid, 1
+  output :saxihp0_arready, 1
+
+  output :saxihp0_rid, 6
+  output :saxihp0_rdata, 64
+  output :saxihp0_rresp, 2
+  output :saxihp0_rlast, 1
+  output :saxihp0_rvalid, 1
+  input :saxihp0_rready, 1
+
+  output :saxihp0_racount, 3
+  output :saxihp0_rcount, 8
+
   # --- EMIO GPIO banks 2/3 — the AXI-free control plane -------------------------
   input :emio_gpio_i, 64
   output :emio_gpio_o, 64
@@ -229,6 +261,25 @@ defmodule Hw.PS7HP do
       SAXIHP0ARESETN: :saxihp0_aresetn,
       SAXIHP0WACOUNT: :saxihp0_wacount,
       SAXIHP0WCOUNT: :saxihp0_wcount,
+      SAXIHP0ARID: :saxihp0_arid,
+      SAXIHP0ARADDR: :saxihp0_araddr,
+      SAXIHP0ARLEN: :saxihp0_arlen,
+      SAXIHP0ARSIZE: :saxihp0_arsize,
+      SAXIHP0ARBURST: :saxihp0_arburst,
+      SAXIHP0ARLOCK: :saxihp0_arlock,
+      SAXIHP0ARCACHE: :saxihp0_arcache,
+      SAXIHP0ARPROT: :saxihp0_arprot,
+      SAXIHP0ARQOS: :saxihp0_arqos,
+      SAXIHP0ARVALID: :saxihp0_arvalid,
+      SAXIHP0ARREADY: :saxihp0_arready,
+      SAXIHP0RID: :saxihp0_rid,
+      SAXIHP0RDATA: :saxihp0_rdata,
+      SAXIHP0RRESP: :saxihp0_rresp,
+      SAXIHP0RLAST: :saxihp0_rlast,
+      SAXIHP0RVALID: :saxihp0_rvalid,
+      SAXIHP0RREADY: :saxihp0_rready,
+      SAXIHP0RACOUNT: :saxihp0_racount,
+      SAXIHP0RCOUNT: :saxihp0_rcount,
       EMIOGPIOI: :emio_gpio_i,
       EMIOGPIOO: :emio_gpio_o,
       EMIOGPIOTN: :emio_gpio_tn
