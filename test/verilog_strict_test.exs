@@ -95,6 +95,30 @@ defmodule VerilogStrictTest do
     assert log =~ "DONE fails=0"
   end
 
+  # Design-level gates: the whole flattened top against a behavioural PS7
+  # (and pass-through Xilinx primitives), testbench named "tb", top "top".
+  for {top, tb_file} <- [
+        {LibreSDRRadio.HPLoop.Top, "tb_hp_loop.v"},
+        {LibreSDRRadio.Top, "tb_top_txdma.v"}
+      ] do
+    test "#{inspect(top)} passes #{tb_file} under iverilog", %{dir: dir} do
+      dut = Path.join(dir, "top.v")
+      File.write!(dut, Hw.emit(Hw.Compile.Elaborate.elaborate(unquote(top))))
+      tb = Path.expand("support/verilog/#{unquote(tb_file)}", __DIR__)
+      bin = Path.join(dir, "tb")
+
+      {out, rc} = iverilog(["-o", bin, "-s", "tb", tb, dut])
+      assert rc == 0, out
+
+      vvp = Path.join(Path.dirname(@iverilog), "vvp")
+      {log, _} = System.cmd(vvp, ["-n", bin], stderr_to_stdout: true, cd: dir)
+
+      fails = for l <- String.split(log, "\n"), String.starts_with?(l, "FAIL"), do: l
+      assert fails == [], Enum.join(Enum.take(fails, 20), "\n")
+      assert log =~ "DONE fails=0"
+    end
+  end
+
   describe "Verilog keywords" do
     alias Hw.Emit.Verilog.Names
     alias Hw.IR.Design

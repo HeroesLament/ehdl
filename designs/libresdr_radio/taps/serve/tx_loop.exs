@@ -12,6 +12,13 @@
 #   LsdrBringup.run("http://<peer>:8101", ["tx_loop.exs"], "<tx bitstream>.bin")
 #   Nervezynq.TxLoop.sweep()          # all 16 order/phase combos, scored
 #   Nervezynq.TxLoop.once(opts)       # one combo, with raw samples
+#
+# TX DMA (build_txdma: HP0 reader -> tbuf -> TX port). EMIO bank 2:
+#   [2] clear stickies  [8] source 0 pattern / 1 DMA  [9] reader enable
+#   [10] cyclic (whole 1 MB ring loops)  [11] run
+# bank 3 = head_addr. STATUS0 (AXI 0x1C): [22:10] read_ptr[19:7],
+# [30:23] bursts[7:0], [31] underflow sticky.
+#   Nervezynq.TxLoop.dma_gate()       # ring = marked pattern, cyclic, scored
 
 defmodule Nervezynq.TxLoop do
   import Bitwise
@@ -112,6 +119,171 @@ defmodule Nervezynq.TxLoop do
       IO.puts("TXLOOP GATE " <> inspect(r))
       r
     after
+      AD9363.write_verify(0x007, orig)
+      fdd_exit()
+    end
+  end
+
+  # --- TX DMA -----------------------------------------------------------------
+  @tx_base 0x3FD0_0000
+  @tx_ring 0x0010_0000
+  @dirm_3 0x2C4
+  @oen_3 0x2C8
+  @data_3 0x4C
+  @dma_bits 0x0F04
+  @status0 0x1C
+  # Q2 in the DDR ring. The fabric pattern's is 0xA5C, so a capture that
+  # scores against this marker cannot have come from the pattern generator.
+  @dma_q2 0x3C5
+
+  defp dma_ports do
+    case Process.get(:tx_dma_ports) do
+      nil ->
+        g = gpio()
+        {:ok, d} = PortWire.transact(g, {:read32, @dirm_2})
+        :ok = PortWire.transact(g, {:write32, @dirm_2, d ||| @dma_bits})
+        {:ok, o} = PortWire.transact(g, {:read32, @oen_2})
+        :ok = PortWire.transact(g, {:write32, @oen_2, o ||| @dma_bits})
+        :ok = PortWire.transact(g, {:write32, @dirm_3, 0xFFFF_FFFF})
+        :ok = PortWire.transact(g, {:write32, @oen_3, 0xFFFF_FFFF})
+        {:ok, tx} = PortWire.open(@tx_base, @tx_ring)
+        p = %{gpio: g, tx: tx}
+        Process.put(:tx_dma_ports, p)
+        p
+
+      p ->
+        p
+    end
+  end
+
+  # Bits 2 and 8..11 only (MASK_DATA_2_LSW: upper half 1 = leave alone).
+  defp dma_ctrl(opts) do
+    v =
+      (if opts[:clear], do: 1 <<< 2, else: 0) |||
+        (if opts[:dma], do: 1 <<< 8, else: 0) |||
+        (if opts[:enable], do: 1 <<< 9, else: 0) |||
+        (if opts[:cyclic], do: 1 <<< 10, else: 0) |||
+        (if opts[:run], do: 1 <<< 11, else: 0)
+
+    %{gpio: g} = dma_ports()
+    :ok = PortWire.transact(g, {:write32, @mask_data_2_lsw, (0xFFFF &&& bnot(@dma_bits)) <<< 16 ||| v})
+  end
+
+  def dma_head(addr) do
+    %{gpio: g} = dma_ports()
+    :ok = PortWire.transact(g, {:write32, @data_3, addr})
+  end
+
+  def dma_status do
+    {:ok, v} = Nervezynq.Fabric.read32(@status0)
+    {:ok, s2} = Nervezynq.Fabric.read32(0x24)
+    %{read_ptr: (v >>> 10 &&& 0x1FFF) <<< 7, bursts_lo: v >>> 23 &&& 0xFF, uflow: v >>> 31 &&& 1,
+      rresp_errs: s2 >>> 24 &&& 0xF, rlast_errs: s2 >>> 28 &&& 0xF}
+  end
+
+  # Frame k in the RX packer / SampleFormat layout, as two little-endian u32:
+  #   [11:0] I1 = k   [23:12] Q1 = ~k   [35:24] I2 = halves swapped   [47:36] Q2 = marker
+  defp dma_frame(k) do
+    i1 = k &&& 0xFFF
+    q1 = bnot(k) &&& 0xFFF
+    i2 = halves_swapped(i1)
+    lo = i1 ||| q1 <<< 12 ||| (i2 &&& 0xFF) <<< 24
+    hi = i2 >>> 8 ||| @dma_q2 <<< 4
+    [lo, hi]
+  end
+
+  @doc "Fill the whole TX ring with marked frames 0..131071 (k mod 4096 wraps cleanly)."
+  def dma_fill do
+    %{tx: tx} = dma_ports()
+
+    0..(div(@tx_ring, 8) - 1)
+    |> Enum.chunk_every(2048)
+    |> Enum.each(fn chunk ->
+      vals = Enum.flat_map(chunk, &dma_frame/1)
+      :ok = PortWire.transact(tx, {:write_block, hd(chunk) * 8, vals}, 15_000)
+    end)
+  end
+
+  def dma_stop do
+    dma_ctrl(run: false)
+  end
+
+  @doc "Score against the DMA frames: every field, the marker, and +1 continuity."
+  def dma_score(%{ch1: ch1, ch2: ch2}) do
+    rows =
+      Enum.zip(ch1, ch2)
+      |> Enum.map(fn {{i1, q1}, {i2, q2}} -> {u12(i1), u12(q1), u12(i2), u12(q2)} end)
+
+    fit =
+      Enum.count(rows, fn {i1, q1, i2, q2} ->
+        q1 == (bnot(i1) &&& 0xFFF) and i2 == halves_swapped(i1) and q2 == @dma_q2
+      end)
+
+    steps =
+      rows
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.chunk_every(2, 1, :discard)
+      |> Enum.count(fn [a, b] -> b == (a + 1 &&& 0xFFF) end)
+
+    zeros = Enum.count(rows, &(&1 == {0, 0, 0, 0}))
+    pattern = Enum.count(rows, fn {_, _, _, q2} -> q2 == 0xA5C end)
+    %{n: length(rows), fit: fit, ctr_steps: steps, zeros: zeros, pattern_frames: pattern}
+  end
+
+  @doc """
+  The TX DMA gate, guarded like gate/1: ring filled with marked frames,
+  reader primed in cyclic mode, source switched to DMA, `reps` captures of
+  `n` frames through the data-port loopback. Pass = every frame fits the
+  marker, continuity n-1 each, no underflow, no RRESP/RLAST errors.
+  """
+  def dma_gate(opts \\ []) do
+    reps = Keyword.get(opts, :reps, 3)
+    n = Keyword.get(opts, :n, 1000)
+    delay = Keyword.get(opts, :tx_delay, @tx_delay_measured)
+    spawn(fn -> Process.sleep(Keyword.get(opts, :guard_ms, 60_000)); dma_stop(); fdd_exit() end)
+    {:ok, orig} = AD9363.read(0x007)
+
+    try do
+      t0 = System.monotonic_time(:millisecond)
+      :ok = dma_fill()
+      fill_ms = System.monotonic_time(:millisecond) - t0
+
+      dma_stop()
+      Process.sleep(2)
+      dma_head(@tx_base)
+      dma_ctrl(run: true, enable: true, cyclic: true)
+      Process.sleep(2)
+      primed = dma_status()
+
+      {:ok, _} = fdd_enter()
+      {:ok, _} = AD9363.write_verify(0x007, delay)
+      AD9363.bist_prbs(:disable)
+      AD9363.bist_tone(:disable)
+      {:ok, _} = loopback(true)
+      ctrl(enable: true)
+      dma_ctrl(run: true, enable: true, cyclic: true, dma: true, clear: true)
+      Process.sleep(1)
+      dma_ctrl(run: true, enable: true, cyclic: true, dma: true)
+      Process.sleep(5)
+
+      scores =
+        for _ <- 1..reps do
+          {:ok, cap} = SDR.rx(n)
+          dma_score(cap)
+        end
+
+      st = dma_status()
+      pass =
+        Enum.all?(scores, &(&1.fit == n and &1.ctr_steps == n - 1)) and st.uflow == 0 and
+          st.rresp_errs == 0 and st.rlast_errs == 0
+
+      r = %{gate: :tx_dma, pass: pass, fill_ms: fill_ms, primed: primed, status: st, scores: scores}
+      IO.puts("TXDMA GATE " <> inspect(r))
+      r
+    after
+      dma_stop()
+      ctrl([])
+      loopback(false)
       AD9363.write_verify(0x007, orig)
       fdd_exit()
     end

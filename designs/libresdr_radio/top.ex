@@ -393,8 +393,6 @@ defmodule LibreSDRRadio.Top do
   # Explicit zero fields for the status word concatenations. A sized literal
   # inside a concat (`{0::22, ...}`) is not parsed by the DSL, so the padding
   # is a named wire.
-  wire :pad22, 22
-  wire :pad8, 8
   wire :pad7, 7
   wire :pad2, 2
 
@@ -469,18 +467,24 @@ defmodule LibreSDRRadio.Top do
   wire :hp_wacount, 6
   wire :hp_wcount, 8
 
-  # HP0 read channel: unused in this design, tied off (Hw.PS7HP's
-  # unbound-port rule). ARVALID and RREADY bind to `zero`; the AR fields
-  # are constant zeros so no PS input floats.
-  wire :hp_arid_tie, 6
-  wire :hp_araddr_tie, 32
-  wire :hp_arlen_tie, 4
-  wire :hp_arsize_tie, 2
-  wire :hp_arburst_tie, 2
-  wire :hp_arlock_tie, 2
-  wire :hp_arcache_tie, 4
-  wire :hp_arprot_tie, 3
-  wire :hp_arqos_tie, 4
+  # HP0 read channel: Hw.AXIHPReader, the TX-direction DMA (below).
+  wire :hp_arid, 6
+  wire :hp_araddr, 32
+  wire :hp_arlen, 4
+  wire :hp_arsize, 2
+  wire :hp_arburst, 2
+  wire :hp_arlock, 2
+  wire :hp_arcache, 4
+  wire :hp_arprot, 3
+  wire :hp_arqos, 4
+  wire :hp_arvalid, 1
+  wire :hp_arready, 1
+  wire :hp_rid, 6
+  wire :hp_rdata, 64
+  wire :hp_rresp, 2
+  wire :hp_rlast, 1
+  wire :hp_rvalid, 1
+  wire :hp_rready, 1
 
   wire :emio_in, 64
   wire :emio_out, 64
@@ -574,6 +578,101 @@ defmodule LibreSDRRadio.Top do
   wire :sb_rd_ptr, 11, init: 0
   wire :sb_rd_idx, 10
 
+  # --- TX DMA: DDR ring -> HP0 reader -> dual-clock BRAM FIFO -> TX framer ----
+  #
+  # The mirror of the RX stream. Hw.AXIHPReader (silicon-proven in
+  # LibreSDRRadio.HPLoop.Top, gate 3a) reads 64-bit frame words out of the
+  # TX ring on AXI_CLK; an inlined dual-clock FIFO (tbuf) carries them to
+  # DATA_CLK, where the framer's sample_req pops one word per radio frame.
+  # Word layout = the RX packer's sample fields and Nervezynq.SampleFormat:
+  #   [11:0] I1  [23:12] Q1  [35:24] I2  [47:36] Q2  [63:48] ignored
+  #
+  # EMIO control (bank 2 bits, bank 3 = head):
+  #   [8]  tx source: 0 = test pattern (below), 1 = DMA (only while run=1)
+  #   [9]  reader enable (issue AR bursts while head is ahead)
+  #   [10] cyclic: head follows read_ptr - 128, so the WHOLE 1 MB ring
+  #        (131072 frames) plays forever; bank 3 is ignored
+  #   [11] run: 0 holds the reader in reset (read_ptr = base) and drains
+  #        the FIFO. Safe at any time: run low first gates enable off, and
+  #        the reset waits until no read is in flight (ARVALID through the
+  #        RLAST beat). Resetting mid-burst would strand the PS's remaining
+  #        beats with RREADY low, wedging HP0 reads (tb_top_txdma.v found
+  #        it; hp_loop left this to software). run=1 with [8]=0 primes: the FIFO fills and holds, so
+  #        flipping [8] afterwards starts playback at the ring's first word
+  #   [63:32] head_addr, absolute (Hw.AXIHPReader's producer rule applies)
+  #
+  # Crossings. Both FIFO pointers cross as 11-bit gray codes through 2-flop
+  # synchronisers, and BOTH only ever step by one: the read side never
+  # snaps (unlike sbuf's rd_rst), it drains one word per DATA_CLK while
+  # run is low. That keeps the read pointer's gray code single-bit so it
+  # may cross back to AXI_CLK for the reader's m_space. m_space and the
+  # read-side empty test both see the far pointer late, so both err
+  # conservative. An empty FIFO at sample_req in DMA mode sends a zero
+  # frame and latches the underflow sticky (cleared by EMIO [2]).
+  #
+  # Status: STATUS0[22:10] read_ptr[19:7] (the producer's credit, in 128 B
+  # units), [30:23] bursts[7:0], [31] underflow sticky. STATUS2[27:24]
+  # rresp_errs[3:0], [31:28] rlast_errs[3:0]. Field names in regmap.exs.
+  wire :tx_base, 32
+  wire :tx_ring, 32
+  wire :txs_axi, 1
+  wire :rd_enable, 1
+  wire :rd_cyclic, 1
+  wire :rd_run, 1
+  wire :rd_resetn, 1
+  wire :rd_en_eff, 1
+  wire :rd_inflight, 1, init: 0
+  wire :rd_busy, 1
+  wire :head_raw, 32
+  wire :head_s0, 32, init: 0
+  wire :head_s1, 32, init: 0
+  wire :head_q, 32, init: 0
+  wire :rd_head, 32
+  wire :rd_m_data, 64
+  wire :rd_m_wen, 1
+  wire :rd_m_space, 1
+  wire :rd_read_ptr, 32
+  wire :rd_bursts, 16
+  wire :rd_rresp_errs, 8
+  wire :rd_rlast_errs, 8
+  wire :tx_dma_axi, 1
+  wire :tx_dma, 1
+  wire :tx_run, 1
+  wire :tx_clr, 1
+  wire :tx_uflow, 1, init: 0
+  wire :tx_uflow_sync, 1
+
+  memory :tbuf, width: 64, depth: 1024, sync_read: :data_clk
+
+  wire :tb_wr_ptr, 11, init: 0
+  wire :tb_wr_gray, 11, init: 0
+  wire :tb_wptr_next, 11
+  wire :tb_wr_idx, 10
+  wire :tb_wg_x, 11
+  wire :tb_wg_s0, 11, init: 0
+  wire :tb_wg_s1, 11, init: 0
+  wire :tb_wb1, 11
+  wire :tb_wb2, 11
+  wire :tb_wb4, 11
+  wire :tb_wr_bin, 11
+  wire :tb_rd_ptr, 11, init: 0
+  wire :tb_rd_gray, 11, init: 0
+  wire :tb_rptr_next, 11
+  wire :tb_rd_idx, 10
+  wire :tb_rg_x, 11
+  wire :tb_rg_s0, 11, init: 0
+  wire :tb_rg_s1, 11, init: 0
+  wire :tb_rb1, 11
+  wire :tb_rb2, 11
+  wire :tb_rb4, 11
+  wire :tb_rd_bin, 11
+  wire :tb_count_w, 11
+  wire :tb_count_r, 11
+  wire :tb_nonempty, 1
+  wire :tb_rd_en, 1
+  wire :tb_q, 64
+  wire :tb_live, 1
+  wire :tb_word, 64
 
   # --- TX data port (Hw.AD936xTxPort -> ODDR -> OBUFDS), DATA_CLK domain ------
   #
@@ -680,17 +779,23 @@ defmodule LibreSDRRadio.Top do
     saxihp0_bready: :hp_bready,
     saxihp0_wacount: :hp_wacount,
     saxihp0_wcount: :hp_wcount,
-    saxihp0_arid: :hp_arid_tie,
-    saxihp0_araddr: :hp_araddr_tie,
-    saxihp0_arlen: :hp_arlen_tie,
-    saxihp0_arsize: :hp_arsize_tie,
-    saxihp0_arburst: :hp_arburst_tie,
-    saxihp0_arlock: :hp_arlock_tie,
-    saxihp0_arcache: :hp_arcache_tie,
-    saxihp0_arprot: :hp_arprot_tie,
-    saxihp0_arqos: :hp_arqos_tie,
-    saxihp0_arvalid: :zero,
-    saxihp0_rready: :zero,
+    saxihp0_arid: :hp_arid,
+    saxihp0_araddr: :hp_araddr,
+    saxihp0_arlen: :hp_arlen,
+    saxihp0_arsize: :hp_arsize,
+    saxihp0_arburst: :hp_arburst,
+    saxihp0_arlock: :hp_arlock,
+    saxihp0_arcache: :hp_arcache,
+    saxihp0_arprot: :hp_arprot,
+    saxihp0_arqos: :hp_arqos,
+    saxihp0_arvalid: :hp_arvalid,
+    saxihp0_arready: :hp_arready,
+    saxihp0_rid: :hp_rid,
+    saxihp0_rdata: :hp_rdata,
+    saxihp0_rresp: :hp_rresp,
+    saxihp0_rlast: :hp_rlast,
+    saxihp0_rvalid: :hp_rvalid,
+    saxihp0_rready: :hp_rready,
     emio_gpio_i: :emio_in,
     emio_gpio_o: :emio_out
 
@@ -735,6 +840,51 @@ defmodule LibreSDRRadio.Top do
     m_axi_bresp: :hp_bresp,
     m_axi_bvalid: :hp_bvalid,
     m_axi_bready: :hp_bready
+
+  instance :rd, Hw.AXIHPReader,
+    BURST_LEN: 16,
+    aclk: :axi_clk,
+    aresetn: :rd_resetn,
+    m_data: :rd_m_data,
+    m_wen: :rd_m_wen,
+    m_space: :rd_m_space,
+    base_addr: :tx_base,
+    ring_size: :tx_ring,
+    head_addr: :rd_head,
+    enable: :rd_en_eff,
+    read_ptr: :rd_read_ptr,
+    bursts: :rd_bursts,
+    rresp_errs: :rd_rresp_errs,
+    rlast_errs: :rd_rlast_errs,
+    m_axi_arid: :hp_arid,
+    m_axi_araddr: :hp_araddr,
+    m_axi_arlen: :hp_arlen,
+    m_axi_arsize: :hp_arsize,
+    m_axi_arburst: :hp_arburst,
+    m_axi_arlock: :hp_arlock,
+    m_axi_arcache: :hp_arcache,
+    m_axi_arprot: :hp_arprot,
+    m_axi_arqos: :hp_arqos,
+    m_axi_arvalid: :hp_arvalid,
+    m_axi_arready: :hp_arready,
+    m_axi_rid: :hp_rid,
+    m_axi_rdata: :hp_rdata,
+    m_axi_rresp: :hp_rresp,
+    m_axi_rlast: :hp_rlast,
+    m_axi_rvalid: :hp_rvalid,
+    m_axi_rready: :hp_rready
+
+  instance :tx_dma_cdc, Hw.CDC.Sync2,
+    clk_dst: :data_clk, rst: :zero, data_in: :tx_dma_axi, data_out: :tx_dma
+
+  instance :tx_run_cdc, Hw.CDC.Sync2,
+    clk_dst: :data_clk, rst: :zero, data_in: :rd_run, data_out: :tx_run
+
+  instance :tx_clr_cdc, Hw.CDC.Sync2,
+    clk_dst: :data_clk, rst: :zero, data_in: :stat_clear, data_out: :tx_clr
+
+  instance :tx_uflow_cdc, Hw.CDC.Sync2,
+    clk_dst: :axi_clk, rst: :axi_rst, data_in: :tx_uflow, data_out: :tx_uflow_sync
 
   instance :packer, Hw.AD936xFramePacker,
     clk: :data_clk,
@@ -1037,7 +1187,7 @@ defmodule LibreSDRRadio.Top do
     cap_wr_idx = cap_wr_addr[9..0]
     pad5 = 0
 
-    status2 = {pad8, dclk_count}
+    status2 = {rd_rlast_errs[3..0], rd_rresp_errs[3..0], dclk_count}
 
     # 5 + 1 + 26 = 32.
     status3 = {pad5, cap_done_sync, cap_word}
@@ -1067,11 +1217,10 @@ defmodule LibreSDRRadio.Top do
     tap_value = ctrl1[12..8]
     tap_ld = ctrl1[13..13]
 
-    pad22 = 0
-    pad8 = 0
     pad7 = 0
     pad2 = 0
-    status0 = {pad22, spi_tx_ready, done_toggle, rx_data_reg}
+    status0 = {tx_uflow_sync, rd_bursts[7..0], rd_read_ptr[19..7],
+               spi_tx_ready, done_toggle, rx_data_reg}
     # [23:0] heartbeat, [24] IDELAYCTRL RDY, [29:25] lane-0 CNTVALUEOUT.
     # CNTVALUEOUT is the point of VAR_LOAD: it reports the tap the silicon is
     # actually using, so "the tap took effect" becomes a measurement rather
@@ -1083,16 +1232,41 @@ defmodule LibreSDRRadio.Top do
     dma_base = 0x3FF00000
     dma_ring = 0x00100000
 
-    # HP0 read channel tie-offs (see the wire block).
-    hp_arid_tie = 0
-    hp_araddr_tie = 0
-    hp_arlen_tie = 0
-    hp_arsize_tie = 0
-    hp_arburst_tie = 0
-    hp_arlock_tie = 0
-    hp_arcache_tie = 0
-    hp_arprot_tie = 0
-    hp_arqos_tie = 0
+    # TX DMA (see the TX DMA wire block). Ring per note 09: 0x3FD0_0000,
+    # 1 MB, the same region hp_loop proved.
+    tx_base = 0x3FD00000
+    tx_ring = 0x00100000
+    txs_axi = emio_out[8..8]
+    rd_enable = emio_out[9..9]
+    rd_cyclic = emio_out[10..10]
+    rd_run = emio_out[11..11]
+    head_raw = emio_out[63..32]
+    rd_en_eff = band(rd_enable, rd_run)
+    rd_busy = bor(rd_inflight, hp_arvalid)
+    rd_resetn = band(fclk_reset0_n, bor(rd_run, rd_busy))
+    tx_dma_axi = band(txs_axi, rd_run)
+
+    # Cyclic: one burst behind the tail reads as a ring that is full except
+    # for the engine's mandatory free burst, so the reader never stops.
+    rd_head = head_q
+
+    hdl_case <<rd_cyclic::1>> do
+      <<0::1>> -> rd_head = head_q
+      <<1::1>> -> rd_head = rd_read_ptr - 128
+    end
+
+    # tbuf write side (AXI_CLK) and its view of the read pointer.
+    tb_wptr_next = tb_wr_ptr + 1
+    tb_wr_idx = tb_wr_ptr[9..0]
+    # Comb alias for the gray crossing; see sb_wg_x. Read nowhere else.
+    tb_wg_x = tb_wr_gray
+    tb_rb1 = bxor(tb_rg_s1, tb_rg_s1 >>> 1)
+    tb_rb2 = bxor(tb_rb1, tb_rb1 >>> 2)
+    tb_rb4 = bxor(tb_rb2, tb_rb2 >>> 4)
+    tb_rd_bin = bxor(tb_rb4, tb_rb4 >>> 8)
+    tb_count_w = tb_wr_ptr - tb_rd_bin
+    # Hw.AXIHPReader's contract: a whole burst of room, or no burst.
+    rd_m_space = tb_count_w <= 1008
 
     # EMIO bank 2 control bits (Linux gpiochip lines 54+). Until software
     # configures the bank direction and drives it, EMIOGPIOO reads 0 — the
@@ -1110,10 +1284,52 @@ defmodule LibreSDRRadio.Top do
     tx_iq_axi = emio_out[5..5]
     tx_ch_axi = emio_out[6..6]
     tx_fb_axi = emio_out[7..7]
+    # tbuf read side (DATA_CLK). Pop on sample_req in DMA mode; drain one
+    # word per cycle while run is low (single steps only: see the wire
+    # block); hold while run=1 and the pattern is selected (priming).
+    tb_rptr_next = tb_rd_ptr + 1
+    tb_rd_idx = tb_rd_ptr[9..0]
+    tb_rg_x = tb_rd_gray
+    tb_wb1 = bxor(tb_wg_s1, tb_wg_s1 >>> 1)
+    tb_wb2 = bxor(tb_wb1, tb_wb1 >>> 2)
+    tb_wb4 = bxor(tb_wb2, tb_wb2 >>> 4)
+    tb_wr_bin = bxor(tb_wb4, tb_wb4 >>> 8)
+    tb_count_r = tb_wr_bin - tb_rd_ptr
+    tb_nonempty = tb_count_r != 0
+    tb_rd_en = band(bor(bnot(tx_run), band(tx_dma, tx_req)), tb_nonempty)
+    tb_q = tbuf[tb_rd_idx]
+
+    # First-word-fall-through: tb_q is the head word (the pointer only moves
+    # on a pop, and the sync read has three spare edges before the next
+    # latch), so the word the framer latches on a sample_req edge is exactly
+    # the word that edge pops. Empty sends a zero frame. (A registered
+    # "valid" flag here zeroed the first frame and dropped word 0: caught by
+    # tb_top_txdma.v.)
+    tb_live = band(tx_dma, tb_nonempty)
+    tb_word = tb_q
+
+    hdl_case <<tb_live::1>> do
+      <<0::1>> -> tb_word = 0
+      <<1::1>> -> tb_word = tb_q
+    end
+
     tx_i1 = tx_ctr
     tx_q1 = bnot(tx_ctr)
     tx_i2 = {tx_ctr[5..0], tx_ctr[11..6]}
     tx_q2 = 0xA5C
+
+    hdl_case <<tx_dma::1>> do
+      <<0::1>> ->
+        tx_i1 = tx_ctr
+        tx_q1 = bnot(tx_ctr)
+        tx_i2 = {tx_ctr[5..0], tx_ctr[11..6]}
+        tx_q2 = 0xA5C
+      <<1::1>> ->
+        tx_i1 = tb_word[11..0]
+        tx_q1 = tb_word[23..12]
+        tx_i2 = tb_word[35..24]
+        tx_q2 = tb_word[47..36]
+    end
     tx_fb_d1 = bnot(tx_fb)
     tx_fb_d2 = tx_fb
     tx_d0_r = tx_rise[0..0]
@@ -1496,6 +1712,71 @@ defmodule LibreSDRRadio.Top do
   on :data_clk do
     if tx_req == 1 do
       tx_ctr = tx_ctr + 1
+    end
+  end
+
+  # head_addr crossing (as hp_loop): 2-flop sync, then accept only a value
+  # seen on two consecutive samples, so a mid-update GPIO write is ignored.
+  on :axi_clk do
+    head_s0 = head_raw
+    head_s1 = head_s0
+
+    if head_s1 == head_s0 do
+      head_q = head_s1
+    end
+  end
+
+  # HP0 read in flight: AR accepted until the RLAST beat is taken. Gates
+  # the reader's reset (see run in the wire block).
+  on :axi_clk do
+    if fclk_reset0_n == 0 do
+      rd_inflight = 0
+    else
+      if hp_arvalid == 1 and hp_arready == 1 do
+        rd_inflight = 1
+      end
+
+      if hp_rvalid == 1 and hp_rready == 1 and hp_rlast == 1 do
+        rd_inflight = 0
+      end
+    end
+  end
+
+  # tbuf write port (AXI_CLK). No reset: the read side tracks it. The
+  # reader only writes after m_space promised room, so no full check.
+  on :axi_clk do
+    if rd_m_wen == 1 do
+      tbuf[tb_wr_idx] = rd_m_data
+      tb_wr_ptr = tb_wptr_next
+      tb_wr_gray = bxor(tb_wptr_next, tb_wptr_next >>> 1)
+    end
+  end
+
+  # Read pointer into AXI_CLK (for m_space).
+  on :axi_clk do
+    tb_rg_s0 = tb_rg_x
+    tb_rg_s1 = tb_rg_s0
+  end
+
+  # Write pointer into DATA_CLK (for empty).
+  on :data_clk do
+    tb_wg_s0 = tb_wg_x
+    tb_wg_s1 = tb_wg_s0
+  end
+
+  # tbuf read port and underflow sticky. DATA_CLK, init only.
+  on :data_clk do
+    if tb_rd_en == 1 do
+      tb_rd_ptr = tb_rptr_next
+      tb_rd_gray = bxor(tb_rptr_next, tb_rptr_next >>> 1)
+    end
+
+    if tx_dma == 1 and tx_req == 1 and tb_nonempty == 0 do
+      tx_uflow = 1
+    end
+
+    if tx_clr == 1 do
+      tx_uflow = 0
     end
   end
 

@@ -36,13 +36,20 @@
   status0: [
     {:spi_rx_data,   :ro, 8},
     {:spi_done,      :ro, 1},
-    {:spi_tx_ready,  :ro, 1}
+    {:spi_tx_ready,  :ro, 1},
+    # TX DMA (top.ex TX DMA block): reader tail in 128 B units (ring offset
+    # >> 7), low byte of the burst count, DATA_CLK underflow sticky.
+    {:tx_rd_ptr_hi,  :ro, 13},
+    {:tx_bursts_lo,  :ro, 8},
+    {:tx_uflow,      :ro, 1}
   ],
   status1: [
     {:heartbeat,     :ro, 24}
   ],
   status2: [
-    {:dclk_count,    :ro, 24}
+    {:dclk_count,    :ro, 24},
+    {:tx_rresp_errs, :ro, 4},
+    {:tx_rlast_errs, :ro, 4}
   ],
   status3: [
     {:cap_word,      :ro, 26},
