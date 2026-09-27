@@ -28,7 +28,7 @@ defmodule VerilogStrictTest do
   @moduletag :iverilog
 
   # Components that must emit strict-legal Verilog. Add new std components.
-  @components [Hw.AXIHPReader, Hw.AXIHPWriter, Hw.FIFO, Hw.StreamBRAMFIFO]
+  @components [Hw.AXIHPReader, Hw.AXIHPWriter, Hw.FIFO, Hw.StreamBRAMFIFO, Hw.AD936xTxPort]
 
   setup do
     dir = Path.join(System.tmp_dir!(), "ehdl_strict_#{System.unique_integer([:positive])}")
