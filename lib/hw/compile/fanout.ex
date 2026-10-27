@@ -104,7 +104,7 @@ defmodule Hw.Compile.Fanout do
 
     copies =
       for k <- 1..(n - 1) do
-        %Signal{reg.output | name: :"#{name}__f#{k}", direction: :internal}
+        %{reg.output | name: :"#{name}__f#{k}", direction: :internal}
       end
 
     all = [reg.output | copies]
@@ -124,8 +124,8 @@ defmodule Hw.Compile.Fanout do
 
     # The original is kept too: opt_merge would otherwise fold it into one
     # of the kept copies (probe 2026-10-27: 3 FFs left for 4, one at 2x load).
-    kept = %Reg{reg | keep: true}
-    copy_regs = for c <- copies, do: %Reg{reg | output: c, keep: true}
+    kept = %{reg | keep: true}
+    copy_regs = for c <- copies, do: %{reg | output: c, keep: true}
     others = Enum.map(others, &if(&1 == reg, do: kept, else: &1))
 
     design = %{design | ops: others ++ new_ops ++ copy_regs}
@@ -221,7 +221,7 @@ defmodule Hw.Compile.Fanout do
     {ops, sigs, outs} =
       Enum.reduce(parts, {[], [], []}, fn {%{slice: {hi, lo}}, copy}, {ops, sigs, outs} ->
         tag = "#{out.name}__p#{lo}"
-        part_out = %Signal{out | name: :"#{tag}", width: hi - lo + 1, direction: :internal, init: nil}
+        part_out = %{out | name: :"#{tag}", width: hi - lo + 1, direction: :internal, init: nil}
 
         {cases, case_ops, case_sigs} =
           mux.cases
