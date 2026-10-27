@@ -17,6 +17,8 @@ defmodule Hw.Compile.Fanout do
 
     1. Finds the `Reg` that drives the signal. Only registers can be
        replicated without adding latency; anything else is an error.
+       `sig == 1` / `sig != 0` compares on it are folded into the
+       register first, so `if sig == 1 do` muxes count as direct uses.
     2. Counts the load of every consumer op: a mux that uses the signal as
        a condition costs its output width (one LUT input per output bit),
        any other use costs one.
@@ -46,7 +48,7 @@ defmodule Hw.Compile.Fanout do
   """
 
   alias Hw.IR.Design
-  alias Hw.IR.Ops.{Concat, Mux, Reg, Slice}
+  alias Hw.IR.Ops.{Concat, Eq, Mux, Neq, Reg, Slice}
   alias Hw.IR.Types.{Const, Signal}
 
   import Bitwise
@@ -102,6 +104,10 @@ defmodule Hw.Compile.Fanout do
 
     validate!(reg, n, where)
 
+    # `sel == 1` in the DSL is an Eq op in front of the mux; fold it into the
+    # register so the mux itself becomes a consumer that can be split.
+    design = alias_unit_compares(design, reg.output)
+
     copies =
       for k <- 1..(n - 1) do
         %{reg.output | name: :"#{name}__f#{k}", direction: :internal}
@@ -149,6 +155,44 @@ defmodule Hw.Compile.Fanout do
       true ->
         :ok
     end
+  end
+
+  # ── unit compares ────────────────────────────────────────────────
+
+  # For a 1-bit register, `x == 1` and `x != 0` are `x`. Uses of such a
+  # compare's output are renamed to the register and the compare (op and
+  # wire) is dropped. `x == 0` / `x != 1` (an inversion) is left alone.
+  defp alias_unit_compares(design, %Signal{name: name} = sig) do
+    hits = Enum.flat_map(design.ops, &unit_compare(&1, name))
+
+    case hits do
+      [] ->
+        design
+
+      _ ->
+        dead = MapSet.new(hits, fn {o, _op} -> o end)
+        drop = MapSet.new(hits, fn {_o, op} -> op end)
+
+        ops =
+          design.ops
+          |> Enum.reject(&MapSet.member?(drop, &1))
+          |> Enum.map(fn op -> Enum.reduce(dead, op, &rename(&2, &1, sig)) end)
+
+        %{design | ops: ops, signals: Enum.reject(design.signals, &MapSet.member?(dead, &1.name))}
+    end
+  end
+
+  defp unit_compare(%Eq{output: %Signal{name: o}, a: a, b: b} = op, name),
+    do: if(unit?(a, b, name, 1), do: [{o, op}], else: [])
+
+  defp unit_compare(%Neq{output: %Signal{name: o}, a: a, b: b} = op, name),
+    do: if(unit?(a, b, name, 0), do: [{o, op}], else: [])
+
+  defp unit_compare(_op, _name), do: []
+
+  defp unit?(a, b, name, v) do
+    match?({%Signal{name: ^name}, %Const{value: ^v}}, {a, b}) or
+      match?({%Const{value: ^v}, %Signal{name: ^name}}, {a, b})
   end
 
   # ── load units ──────────────────────────────────────────────────────

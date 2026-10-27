@@ -113,6 +113,52 @@ defmodule Hw.FanoutTest.NotReg do
   end
 end
 
+defmodule Hw.FanoutTest.WideEq do
+  use Hw.Component
+  clock :clk, freq: 1.0, reset_style: :none
+  input :go, 1
+  input :a, 64
+  input :b, 64
+  output :y, 64
+  wire :sel, 1, init: 0
+
+  fanout :sel, 4
+
+  comb do
+    if sel == 1 do
+      y = a
+    else
+      y = b
+    end
+  end
+
+  on :clk do
+    sel = go
+  end
+end
+
+defmodule Hw.FanoutTest.PlainEq do
+  use Hw.Component
+  clock :clk, freq: 1.0, reset_style: :none
+  input :go, 1
+  input :a, 64
+  input :b, 64
+  output :y, 64
+  wire :sel, 1, init: 0
+
+  comb do
+    if sel == 1 do
+      y = a
+    else
+      y = b
+    end
+  end
+
+  on :clk do
+    sel = go
+  end
+end
+
 defmodule Hw.FanoutTest do
   use ExUnit.Case, async: true
 
@@ -120,7 +166,7 @@ defmodule Hw.FanoutTest do
 
   alias Hw.IR.Ops.{Concat, Mux, Reg}
   alias Hw.Sim
-  alias __MODULE__.{Lanes, NotReg, Parent, Plain, Wide}
+  alias __MODULE__.{Lanes, NotReg, Parent, Plain, PlainEq, Wide, WideEq}
 
   defp ir(mod), do: Hw.Compile.Elaborate.elaborate(mod)
 
@@ -201,6 +247,34 @@ defmodule Hw.FanoutTest do
     refute v =~ "FDRE"
     refute v =~ "ifdef SYNTHESIS"
     refute v =~ "initial sel__f1 "
+  end
+
+
+  test "folds `sel == 1` into the register and splits the mux behind it" do
+    d = ir(WideEq)
+    assert [%Concat{output: %{width: 64}, inputs: parts}] = for(%Concat{} = c <- d.ops, do: c)
+    assert length(parts) == 4
+    refute Enum.any?(d.ops, &match?(%Hw.IR.Ops.Eq{}, &1))
+    refute Enum.any?(d.signals, &String.starts_with?(to_string(&1.name), "_eq_"))
+
+    {:ok, a} = Sim.start(WideEq)
+    {:ok, b} = Sim.start(PlainEq)
+    :rand.seed(:exsss, {4, 5, 6})
+
+    for _ <- 1..100 do
+      go = :rand.uniform(2) - 1
+      va = :rand.uniform(1 <<< 62)
+      vb = :rand.uniform(1 <<< 62)
+
+      for sim <- [a, b] do
+        Sim.set(sim, :go, go)
+        Sim.set(sim, :a, va)
+        Sim.set(sim, :b, vb)
+        Sim.tick(sim, :clk, 1)
+      end
+
+      assert Sim.get(a, :y) == Sim.get(b, :y)
+    end
   end
 
 end
