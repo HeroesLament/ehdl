@@ -63,6 +63,7 @@ defmodule Hw.Emit.Verilog do
       emit_combinational_logic(design, kept, casez?),
       "",
       Sequential.emit_sequential_logic(design.ops, design.clocks, kept),
+      Sequential.emit_kept_registers(design.ops, design.clocks),
       Sequential.emit_memory_logic(design.ops, design.clocks),
       Sequential.emit_blackbox_instances(design.ops, design.params),
       Sequential.emit_tristate_logic(design.ops),
@@ -199,6 +200,7 @@ defmodule Hw.Emit.Verilog do
   defp procedural_names(%Design{ops: ops}) do
     ops
     |> Enum.filter(fn
+      %Reg{keep: true} -> false
       %Reg{} -> true
       %MemRead{clock: clk} -> clk != nil
       op -> Hw.Emit.Verilog.Ops.Structure.procedural?(op)
@@ -292,8 +294,12 @@ defmodule Hw.Emit.Verilog do
 
   # --- Initial Values ---
 
-  defp emit_initial_values(%Design{signals: signals}) do
-    signals_with_init = Enum.filter(signals, fn sig -> sig.init != nil end)
+  defp emit_initial_values(%Design{signals: signals, ops: ops}) do
+    # Kept (replicated) registers carry their init on their private reg.
+    kept_regs = for %Reg{keep: true, output: o} <- ops, into: MapSet.new(), do: o.name
+    signals_with_init = Enum.filter(signals, fn sig ->
+      sig.init != nil and not MapSet.member?(kept_regs, sig.name)
+    end)
 
     case signals_with_init do
       [] -> []

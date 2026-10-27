@@ -11,7 +11,10 @@ defmodule Hw.IR.Ops.Reg do
   """
 
   @enforce_keys [:output, :input, :clock]
-  defstruct [:output, :input, :clock, :reset_value, :enable, :async_reset]
+  # keep: true marks a replicated register (Hw.Compile.Fanout). The Verilog
+  # emitter puts it in its own (* keep *) always block so yosys opt_merge
+  # cannot fold it back into the original.
+  defstruct [:output, :input, :clock, :reset_value, :enable, :async_reset, keep: false]
 end
 
 defmodule Hw.IR.Ops.Mux do

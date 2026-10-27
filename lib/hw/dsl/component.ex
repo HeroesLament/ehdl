@@ -57,6 +57,7 @@ defmodule Hw.DSL.Component do
       Module.register_attribute(__MODULE__, :hw_tristates,   accumulate: true)
       Module.register_attribute(__MODULE__, :hw_complex,     accumulate: true)
       Module.register_attribute(__MODULE__, :hw_fsm,         accumulate: true)
+      Module.register_attribute(__MODULE__, :hw_fanouts,     accumulate: true)
 
       # Interface bindings registered by provides/consumes (step [2])
       Module.register_attribute(__MODULE__, :hw_interface_bindings, accumulate: true)
@@ -78,6 +79,7 @@ defmodule Hw.DSL.Component do
     tristates   = Module.get_attribute(env.module, :hw_tristates)   |> Enum.reverse()
     complex     = Module.get_attribute(env.module, :hw_complex)     |> Enum.reverse()
     fsms        = Module.get_attribute(env.module, :hw_fsm)         |> Enum.reverse()
+    fanouts     = Module.get_attribute(env.module, :hw_fanouts)     |> Enum.reverse()
     defhws      = Module.get_attribute(env.module, :hw_defhw)       |> Enum.reverse()
     iface_bindings = Module.get_attribute(env.module, :hw_interface_bindings) |> Enum.reverse()
 
@@ -117,6 +119,9 @@ defmodule Hw.DSL.Component do
 
       @doc false
       def __hw_tristates__,          do: unquote(Macro.escape(tristates))
+
+      @doc false
+      def __hw_fanouts__,            do: unquote(Macro.escape(fanouts))
 
       @doc false
       def __hw_complex__,            do: unquote(Macro.escape(complex))

@@ -138,6 +138,11 @@ defmodule Hw.Compile.Elaborate do
       elaborate_fsm(d, fsm, clock_map, signal_map, instance_map, memory_map, defhw_map, const_wire_map)
     end)
 
+    # Register replication (`fanout`): this module's own requests, then lower
+    # all of them, children's included, on the flat design.
+    design = Hw.Compile.Fanout.mark(design, module, signal_map)
+    design = Hw.Compile.Fanout.apply(design)
+
     Design.finalize(design)
   end
 

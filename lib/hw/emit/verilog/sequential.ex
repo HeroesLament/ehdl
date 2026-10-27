@@ -12,7 +12,8 @@ defmodule Hw.Emit.Verilog.Sequential do
   Emit sequential (registered) logic as always blocks.
   """
   def emit_sequential_logic(ops, clocks, kept \\ MapSet.new()) do
-    regs = Enum.filter(ops, &match?(%Reg{}, &1))
+    # Replicated registers (keep: true) go through emit_kept_registers/2.
+    regs = Enum.filter(ops, &match?(%Reg{keep: false}, &1))
 
     case regs do
       [] -> []
@@ -40,6 +41,48 @@ defmodule Hw.Emit.Verilog.Sequential do
           end)
         ]
     end
+  end
+
+  @doc """
+  Emit replicated registers (`Reg` with `keep: true`, from `fanout`).
+
+  yosys `opt_merge` folds flip-flops with the same D and init back into
+  one, even when the reg itself is marked `(* keep *)`. A `keep` attribute
+  on the `always` block is copied onto the flip-flop cell, and kept cells
+  are left alone. Vendor neutral: probe 2026-10-27, synth / synth_xilinx /
+  synth_ecp5 / synth_ice40 / synth_gowin all keep 4 of 4 copies (max
+  LUT-input fanout 128 -> 32), also with -abc9 -dff, opt -full and
+  opt_merge -share_all. The D input carries the register's sync reset, if
+  its clock domain has one.
+  """
+  def emit_kept_registers(ops, clocks) do
+    regs = Enum.filter(ops, &match?(%Reg{keep: true}, &1))
+
+    case regs do
+      [] -> []
+      _ -> ["  // Replicated registers (fanout)" | Enum.flat_map(regs, &emit_kept_register(&1, clocks))]
+    end
+  end
+
+  defp emit_kept_register(%Reg{output: out, input: inp, clock: clk, reset_value: rv}, clocks) do
+    clock = Enum.find(clocks, &(&1.name == clk.name)) || clk
+    name = out.name
+    init = out.init || 0
+
+    reset =
+      if Map.get(clock, :reset_style, :sync) != :none and rv != nil,
+        do: Map.get(clock, :reset_signal)
+
+    d =
+      if reset,
+        do: "#{reset} ? #{VerilogOps.emit_value(rv)} : #{VerilogOps.emit_value(inp)}",
+        else: VerilogOps.emit_value(inp)
+
+    [
+      "  reg #{name}__q = 1'b#{init};",
+      "  (* keep *) always @(posedge #{clock.name}) #{name}__q <= #{d};",
+      "  assign #{name} = #{name}__q;"
+    ]
   end
 
   # Emit a bare always block with no reset gating.

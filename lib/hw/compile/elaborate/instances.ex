@@ -201,6 +201,10 @@ defmodule Hw.Compile.Elaborate.Instances do
       Hw.IR.Design.add_op(d, blackbox_op)
     end)
 
+    # Fanout requests (Hw.Compile.Fanout): resolve to the child's prefixed
+    # signals now; lowered once the whole design is flat.
+    design = Hw.Compile.Fanout.mark(design, child_module, prefixed_signal_map)
+
     # Elaborate child tristates (using prefixed signal map)
     child_tristates = if (Code.ensure_loaded?(child_module) and function_exported?(child_module, :__hw_tristates__, 0)),
       do: child_module.__hw_tristates__(), else: []

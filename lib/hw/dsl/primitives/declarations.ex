@@ -211,6 +211,26 @@ defmodule Hw.DSL.Primitives.Declarations do
     end
   end
 
+  @doc """
+  Replicate a 1-bit register so its consumers spread over `copies`
+  identical registers, zero latency. Use it on a select or enable that
+  drives too many LUT inputs (see `mix hw.census`). Lowered after
+  flattening by `Hw.Compile.Fanout`.
+
+      wire :ldsel, 1, init: 0
+      fanout :ldsel, 4
+  """
+  defmacro fanout(signal, copies) do
+    loc = Location.from_env(__CALLER__)
+    quote do
+      @hw_fanouts %{
+        signal:          unquote(signal),
+        copies:          unquote(copies),
+        source_location: unquote(Macro.escape(loc))
+      }
+    end
+  end
+
   defmacro tristate(name, opts) do
     loc = Location.from_env(__CALLER__)
     quote do

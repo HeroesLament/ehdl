@@ -32,7 +32,9 @@ defmodule Hw.IR.Design do
     localparams: [],
     signals: [],
     clocks: [],
-    ops: []
+    ops: [],
+    # pending `fanout` requests, lowered by Hw.Compile.Fanout.apply/1
+    fanouts: []
   ]
 
   @doc """
