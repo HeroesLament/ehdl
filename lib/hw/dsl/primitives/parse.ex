@@ -24,9 +24,13 @@ defmodule Hw.DSL.Primitives.Parse do
   def parse_comb_block(block), do: parse_statements(block)
 
   def parse_statements({:__block__, _, statements}) do
-    Enum.map(statements, &parse_statement/1)
+    Enum.flat_map(statements, &splice(parse_statement(&1)))
   end
-  def parse_statements(single), do: [parse_statement(single)]
+  def parse_statements(single), do: splice(parse_statement(single))
+
+  # A statement-level `generate` parses to its unrolled copies.
+  defp splice(%{type: :generate_splice, body: body}), do: body
+  defp splice(stmt), do: [stmt]
 
   # ---------------------------------------------------------------------------
   # Statement parsing
@@ -69,6 +73,21 @@ defmodule Hw.DSL.Primitives.Parse do
 
   def parse_statement({:=, _, [lhs, rhs]}) do
     %{type: :assign, target: parse_target(lhs), value: parse_expr(rhs)}
+  end
+
+  # `generate k <- 0..3 do ... end` inside `on`, `comb` or an `if`: unrolled
+  # here (`Hw.DSL.Generate`), so the IR holds one copy per index and no trace
+  # of the loop. `parse_statements/1` splices the copies in place.
+  def parse_statement({:generate, _, [{:<-, _, [{var, _, ctx}, range]}, [do: body]]})
+      when is_atom(var) and is_atom(ctx) do
+    if Hw.DSL.Generate.declarative?(body) do
+      raise ArgumentError,
+            "generate inside a logic block may hold statements only; declare " <>
+              "wires and blocks with a module-level generate"
+    end
+
+    copies = Hw.DSL.Generate.unroll(var, range, body)
+    %{type: :generate_splice, body: Enum.flat_map(copies, &parse_statements/1)}
   end
 
   def parse_statement({:hold}), do: %{type: :hold}

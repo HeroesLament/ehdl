@@ -301,50 +301,59 @@ defmodule Hw.DSL.Primitives.LogicBlocks do
   end
   defp merge_fsm_else([stmt | rest]), do: [stmt | merge_fsm_else(rest)]
 
-  @doc """
-  Generate replicated logic.
+  @doc ~S"""
+  Generate replicated logic, unrolled at compile time (`Hw.DSL.Generate`).
 
-      generate i <- 0..7 do
-        out[i] <= in[7 - i]
+  At module level, a body of declarations and blocks is copied once per
+  index and spliced into the module, so every copy expands as written:
+
+      generate k <- 0..3 do
+        wire :"cstate#{k}", 5, init: 0
       end
 
-  The loop variable is substituted at compile time.
+  A body of bare statements becomes combinational logic, as before:
+
+      generate i <- 0..7 do
+        out[i] = in[7 - i]
+      end
+
+  Inside `on`, `comb` or an `if`, `generate` unrolls statements in place:
+
+      on :clk do
+        generate k <- 0..3 do
+          if band(x_en_r, x_seat_r == k) == 1 do
+            cstate[[k]] = 17
+          end
+        end
+      end
+
+  `name[[e]]` names the family member `name<e>` (`cstate[[2]]` is
+  `cstate2`); `:"name#{k}"` folds to a literal atom. A single bracket is
+  still a bit select.
   """
   defmacro generate({:<-, _, [{var, _, _}, range]}, do: block) do
-    # Evaluate the range at compile time
-    range_values = case range do
-      {:.., _, [lo, hi]} -> Enum.to_list(lo..hi)
-      _ -> raise "generate requires a range like 0..N"
+    copies = Hw.DSL.Generate.unroll(var, range, block)
+
+    cond do
+      Hw.DSL.Generate.declarative?(block) and Hw.DSL.Generate.has_statements?(block) ->
+        raise ArgumentError,
+              "generate: a module-level body mixes declarations with bare statements; " <>
+                "wrap the statements in `comb do ... end`"
+
+      Hw.DSL.Generate.declarative?(block) ->
+        {:__block__, [], copies}
+
+      true ->
+        statements = Enum.flat_map(copies, &Parse.parse_statements/1)
+
+        quote do
+          @hw_logic %{
+            type: :combinational,
+            body: unquote(Macro.escape(statements))
+          }
+        end
     end
-
-    # Generate statements for each value
-    statements = Enum.flat_map(range_values, fn val ->
-      # Substitute the variable with the value in the block
-      substituted = substitute_var(block, var, val)
-      Parse.parse_statements(substituted)
-    end)
-
-    quote do
-      @hw_logic %{
-        type: :combinational,
-        body: unquote(Macro.escape(statements))
-      }
-    end
   end
-
-  # Substitute a variable with a value in an AST
-  defp substitute_var({var, _, nil}, var, val) when is_atom(var), do: val
-  defp substitute_var({var, _, ctx}, var, val) when is_atom(var) and is_atom(ctx), do: val
-  defp substitute_var({op, meta, args}, var, val) when is_list(args) do
-    {op, meta, Enum.map(args, &substitute_var(&1, var, val))}
-  end
-  defp substitute_var({a, b}, var, val) do
-    {substitute_var(a, var, val), substitute_var(b, var, val)}
-  end
-  defp substitute_var(list, var, val) when is_list(list) do
-    Enum.map(list, &substitute_var(&1, var, val))
-  end
-  defp substitute_var(other, _var, _val), do: other
 
   @doc """
   Define a named, reusable hardware logic fragment.
