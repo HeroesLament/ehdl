@@ -667,7 +667,16 @@ defmodule Hw.Compile.Elaborate do
 
   def elaborate_logic_block(design, %{type: :sequential, clock: clock_name, body: body} = logic_block, clock_map, signal_map, instance_map, memory_map, defhw_map, const_wire_map) do
     body = body |> inline_defhw_calls(defhw_map) |> assert_no_defhw_calls!("sequential block on #{clock_name}")
-    clock = Map.fetch!(clock_map, clock_name)
+
+    # An `on` block may clock on a derived-clock WIRE (e.g. a PLL output)
+    # rather than a declared clock port — the same case map_child_clocks
+    # already handles for instanced children. Synthesize a clock entry so
+    # top-level sequential logic on a PLL output elaborates too.
+    clock =
+      case Map.fetch(clock_map, clock_name) do
+        {:ok, clk} -> clk
+        :error -> %Hw.IR.Types.Clock{name: clock_name, edge: :posedge}
+      end
     async_reset = Map.get(logic_block, :async_reset)
 
     # Find all signals assigned in this block

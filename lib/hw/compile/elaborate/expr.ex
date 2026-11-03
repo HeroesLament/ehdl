@@ -46,9 +46,19 @@ defmodule Hw.Compile.Elaborate.Expr do
     end
   end
 
+  # A literal is born at least 32 bits wide (the historical default, which
+  # every existing design's width inference is calibrated against) but never
+  # NARROWER than its own value. Without the floor-and-ceiling both, a
+  # 33-bit term literal like `0x100000000 + 14` — an ATOM word — emitted as
+  # `32'd4294967310` and lost its tag: picoBEAM's `cmpeq` produced a
+  # tagless 14 and the engine's `bift` compared against a tagless 14, so
+  # the two agreed and `fib` passed while atoms carried no tag at all.
+  # Same species as the mul/shl width bugs: an inferred width smaller than
+  # the value it must carry, silently truncating at emit.
   def build_expr({:const, n}, _signal_map, _instance_map, _memory_map, design) do
-    {%Const{value: n, width: 32, signed: :unsigned}, design}
+    {%Const{value: n, width: const_lit_width(n), signed: :unsigned}, design}
   end
+
 
   # High-Z constant for tri-state
   def build_expr({:const_z}, _signal_map, _instance_map, _memory_map, design) do
@@ -110,10 +120,16 @@ defmodule Hw.Compile.Elaborate.Expr do
         {result_sig, d3}
 
       nil ->
-        # It's a signal bit index
-        signal = Map.fetch!(signal_map, name)
-        {_addr_val, d1} = build_expr(addr_expr, signal_map, instance_map, memory_map, design)
-        {signal, d1}
+        # It's a signal bit index: `sig[i]` on a non-memory is a 1-bit
+        # slice sig[i..i]. This branch used to DISCARD the index and
+        # return the whole signal — `mosi = sh_tx[7]` emitted as
+        # `mosi = sh_tx` (silently reading bit 0 after truncation).
+        # Found on picoBEAM first silicon (2026-08-22): the SD boot
+        # loader clocked out garbage and every single-bit test in the
+        # design was wrong. Lower to the same Slice op as `sig[i..i]`.
+        _signal = Map.fetch!(signal_map, name)
+        build_expr({:slice, {:signal, name}, addr_expr, addr_expr},
+          signal_map, instance_map, memory_map, design)
     end
   end
 
@@ -146,7 +162,7 @@ defmodule Hw.Compile.Elaborate.Expr do
 
     case {a_val, b_val} do
       {%Const{value: av}, %Const{value: bv}} ->
-        {%Const{value: av - bv, width: 32, signed: :unsigned}, d2}
+        {%Const{value: av - bv, width: const_lit_width(av - bv), signed: :unsigned}, d2}
       _ ->
         {a_val, b_val} = match_const_widths(a_val, b_val)
         result_name = :"_sub_#{Hw.Compile.Elaborate.Gensym.next()}"
@@ -167,11 +183,24 @@ defmodule Hw.Compile.Elaborate.Expr do
 
     case {a_val, b_val} do
       {%Const{value: av}, %Const{value: bv}} ->
-        {%Const{value: av * bv, width: 32, signed: :unsigned}, d2}
+        {%Const{value: av * bv, width: max(32, bits_needed(av * bv)), signed: :unsigned}, d2}
       _ ->
+        # A product needs wa+wb bits — max(wa, wb) (the rule the other
+        # binops use, and Verilog's self-determined rule) silently wraps
+        # it: `fp(6) * 16` in 6 bits turned frame addresses into
+        # `fp*16 mod 64`, and the matching 5-bit spill-side product
+        # truncated DIFFERENTLY (mod 32), so register-window frames came
+        # back from FrameRam as zeros past depth 1. Found on first
+        # silicon (fib(10) returned 0) via the UART-oracle value-chain
+        # probes + iverilog on the emitted netlist, 2026-08-22.
+        # Const operands contribute the bits their VALUE needs (computed
+        # BEFORE match_const_widths inflates them to the signal's width),
+        # keeping products like `addr * 2` tight.
+        wa = op_width(a_val)
+        wb = op_width(b_val)
+        width = wa + wb
         {a_val, b_val} = match_const_widths(a_val, b_val)
         result_name = :"_mul_#{Hw.Compile.Elaborate.Gensym.next()}"
-        width = infer_width(a_val, b_val)
         signed = infer_signedness(a_val, b_val)
         result_sig = %Signal{name: result_name, width: width, signed: signed, direction: :internal}
         d3 = Design.add_signal(d2, result_sig)
@@ -245,7 +274,23 @@ defmodule Hw.Compile.Elaborate.Expr do
     {b_val, d2} = build_expr(b, signal_map, instance_map, memory_map, d1)
 
     result_name = :"_shl_#{Hw.Compile.Elaborate.Gensym.next()}"
-    width = infer_width(a_val, b_val)
+    # A left shift needs wa + max_shift bits, NOT max(wa, wb): with the
+    # old rule `3 <<< (addr * 2)` emitted a 32-bit result, so a shifted
+    # mask aimed at bit 32+ of a 128-bit LVT register silently became
+    # zero — bank-select bookkeeping for the register window's upper
+    # frame slots never happened. Found on first silicon via fib(10)
+    # (UART oracle + iverilog on the emitted netlist), 2026-08-22.
+    # Constant shift amounts widen exactly; variable ones by 2^wb - 1,
+    # capped at 1024 total so a wide shift amount cannot explode the
+    # netlist (yosys prunes unused high bits of the honest widths).
+    wa = op_width(a_val)
+    max_shift =
+      case b_val do
+        %Const{value: v} when is_integer(v) and v >= 0 -> v
+        %Signal{width: wb} -> Bitwise.bsl(1, min(wb, 10)) - 1
+        _ -> 255
+      end
+    width = min(wa + max_shift, 1024)
 
     result_sig = %Signal{name: result_name, width: width, signed: :unsigned, direction: :internal}
     d3 = Design.add_signal(d2, result_sig)
@@ -459,7 +504,7 @@ defmodule Hw.Compile.Elaborate.Expr do
 
     case {a_val, b_val} do
       {%Const{value: av}, %Const{value: bv}} when bv != 0 ->
-        {%Const{value: div(av, bv), width: 32, signed: :unsigned}, d2}
+        {%Const{value: div(av, bv), width: const_lit_width(div(av, bv)), signed: :unsigned}, d2}
       _ ->
         {a_val, b_val} = match_const_widths(a_val, b_val)
         result_name = :"_div_#{Hw.Compile.Elaborate.Gensym.next()}"
@@ -909,6 +954,14 @@ defmodule Hw.Compile.Elaborate.Expr do
   defp value_width(%Const{width: w}),  do: w
   defp value_width(_),                 do: nil
 
+  # Width an operand genuinely needs: a signal its declared width, a
+  # constant only the bits its value requires (its .width may already be
+  # inflated to a partner signal's width by match_const_widths).
+  defp op_width(%Signal{width: w}), do: w
+  defp op_width(%Const{value: v}) when is_integer(v), do: bits_needed(v)
+  defp op_width(%Const{width: w}), do: w
+  defp op_width(_), do: 32
+
   # Minimum number of bits needed to hold a non-negative integer literal.
   # bits_needed(0)=1, bits_needed(0x30)=6, bits_needed(255)=8.
   def bits_needed(v) when is_integer(v) and v > 0, do: floor(:math.log2(v)) + 1
@@ -944,6 +997,9 @@ defmodule Hw.Compile.Elaborate.Expr do
 
   # A literal's width is the max of its declared width and the bits its value
   # needs — :z and non-integers keep width 1.
+  defp const_lit_width(n) when is_integer(n) and n > 0, do: max(32, bits_needed(n))
+  defp const_lit_width(_), do: 32
+
   defp const_min_width(v) when is_integer(v), do: bits_needed(v)
   defp const_min_width(_), do: 1
 

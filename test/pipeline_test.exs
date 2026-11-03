@@ -28,8 +28,8 @@ defmodule PipelineTest do
 
     # Stage outputs auto-declared, widths inferred and propagated in dataflow order.
     assert sig(design, :s1).width == 8    # max(8, 8)
-    assert sig(design, :s2).width == 16   # max(8, 16)
-    assert sig(design, :s3).width == 16   # max(16, 4)
+    assert sig(design, :s2).width == 24   # 8 + 16: a product carries both widths
+    assert sig(design, :s3).width == 24   # max(24, 4)
     assert sig(design, :flag).width == 1  # comparison
 
     # Valid chain: n-1 = 3 intermediate 1-bit regs for 4 stages; no 4th.

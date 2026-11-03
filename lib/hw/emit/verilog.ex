@@ -114,21 +114,31 @@ defmodule Hw.Emit.Verilog do
         ");"
       ]
     else
-      # Emit with parameter block
+      # `localparam`, not `parameter`. Elaboration CONSTANT-FOLDS every
+      # `param` use — by the time this emitter runs, `PWRWAIT` is the
+      # literal 1200000 in twenty comparisons and the declaration is
+      # decorative. Emitting it as `parameter` advertises an override
+      # surface that does not exist: `sd_boot #(.PWRWAIT(64))` elaborates
+      # without complaint and changes nothing, which is a silent wrong
+      # answer in the worst place to have one — a testbench that thinks
+      # it shortened a 100 ms power-up wait and did not.
+      #
+      # As `localparam` the same override is a compile error, and the
+      # value is still there to read. Override params where they are
+      # meant to be overridden: on the `instance`, before elaboration.
       param_decls = Enum.map(params, fn p ->
         if p.default do
-          "  parameter #{p.name} = #{p.default}"
+          "  localparam #{p.name} = #{p.default};"
         else
-          "  parameter #{p.name}"
+          "  localparam #{p.name} = 0;"
         end
       end)
 
       [
-        "module #{name} #(",
-        Enum.join(param_decls, ",\n"),
-        ") (",
+        "module #{name} (",
         "  " <> Enum.join(port_names, ",\n  "),
-        ");"
+        ");",
+        Enum.join(param_decls, "\n")
       ]
     end
   end

@@ -64,6 +64,60 @@ defmodule Hw.Compile.Elaborate.Instances do
     child_clock_map = build_clock_map(child_clocks)
     child_signal_map = build_signal_map(child_signals, child_param_map)
 
+    # Resolve the CHILD's `:infer` widths, in the child's own context.
+    #
+    # `elaborate/1` resolves `:infer` for the signals of the component it is
+    # elaborating. A child's signals never take that path — they are read
+    # straight off `__hw_signals__` here — so without this, an inferred width
+    # survives into the parent as the `:infer` ATOM and dies much later in
+    # emit, on `width - 1`, as a bare ArithmeticError naming no signal.
+    #
+    # This is why `pipeline` had never worked in a real design: every stage
+    # output it declares is `:infer`, so the macro elaborated fine standalone
+    # and broke the moment the component was instantiated in anything.
+    child_infer? = Enum.any?(child_signals, fn sig -> sig[:width] == :infer end)
+
+    child_signal_map =
+      if child_infer? do
+        child_raw_memories_early =
+          if Code.ensure_loaded?(child_module) and
+               function_exported?(child_module, :__hw_memories__, 0),
+             do: child_module.__hw_memories__(),
+             else: []
+
+        # unprefixed, child-local: only used to SIZE expressions here
+        child_mem_map_local =
+          for mem <- child_raw_memories_early, into: %{} do
+            {mem.name,
+             %Ops.Mem{
+               name: mem.name,
+               width: Hw.Compile.Elaborate.resolve_param_pub(mem.width, child_param_map),
+               depth: Hw.Compile.Elaborate.resolve_param_pub(mem.depth, child_param_map),
+               init: mem[:init],
+               sync_read: mem[:sync_read] || false
+             }}
+          end
+
+        child_param_consts =
+          child_param_map
+          |> Enum.flat_map(fn {pname, param} ->
+            case param.value do
+              v when is_integer(v) -> [{pname, %Const{value: v, width: 32, signed: :unsigned}}]
+              _ -> []
+            end
+          end)
+          |> Map.new()
+
+        Hw.Compile.InferWidths.resolve(
+          child_signal_map,
+          child_param_consts,
+          child_logic,
+          child_mem_map_local
+        )
+      else
+        child_signal_map
+      end
+
     # Create prefixed signals for child's ports and internals
     {design, prefixed_signal_map} = create_prefixed_signals(design, inst_name, child_signal_map, signal_map, port_map)
 
@@ -110,12 +164,30 @@ defmodule Hw.Compile.Elaborate.Instances do
     {design, child_memory_map} = Enum.reduce(child_raw_memories, {design, %{}}, fn mem, {d, mmap} ->
       resolved_width = Hw.Compile.Elaborate.resolve_param_pub(mem.width, child_param_map)
       resolved_depth = Hw.Compile.Elaborate.resolve_param_pub(mem.depth, child_param_map)
+      # sync_read names a clock in the CHILD's namespace; remap it through
+      # the instance clock bindings the same way `on` blocks are remapped,
+      # so a child memory clocked on :clk works under a parent that bound
+      # clk: :clk_12 (e.g. a PLL output). Without this, any sync_read
+      # memory inside an instanced component only elaborated when the
+      # parent happened to share the child's clock name.
+      resolved_sync =
+        case mem[:sync_read] do
+          name when is_atom(name) and name not in [nil, false, true] ->
+            case Map.get(child_clock_map, name) do
+              nil -> name
+              clk -> clk.name
+            end
+
+          other ->
+            other || false
+        end
+
       mem_op = %Hw.IR.Ops.Mem{
         name: :"#{inst_name}_#{mem.name}",
         width: resolved_width,
         depth: resolved_depth,
         init: mem[:init],
-        sync_read: mem[:sync_read] || false
+        sync_read: resolved_sync
       }
       d = Hw.IR.Design.add_op(d, mem_op)
       {d, Map.put(mmap, mem.name, mem_op)}
@@ -307,11 +379,37 @@ defmodule Hw.Compile.Elaborate.Instances do
             connected_to when is_atom(connected_to) ->
               case Map.get(parent_signal_map, connected_to) do
                 nil ->
-                  # FIX: parent signal not yet in signal_map (e.g. top-level input ports
-                  # like clk_25mhz that are registered as ports but not in the internal
-                  # signal_map). Synthesize a signal with the parent's name directly so
-                  # the blackbox port connection resolves to the correct wire rather than
-                  # a floating prefixed internal wire (e.g. pll_clk_in with no driver).
+                  # The parent signal is not in the internal signal map. That is
+                  # legitimate for a top-level PORT (`clk_25mhz` is registered as
+                  # a port, not an internal signal), so those resolve to a signal
+                  # carrying the parent's name and no new declaration.
+                  #
+                  # It is NOT legitimate for anything else. A connection to a name
+                  # that is neither a signal nor a port used to synthesize one
+                  # silently and never declare it, and an undeclared net in Verilog
+                  # is an implicit ONE-BIT wire — so a nine-bit program counter
+                  # connected through a mistyped or forgotten `wire` declaration
+                  # arrived at the child as its bottom bit, with no error anywhere.
+                  # (Found in picoBEAM: `unblock_pc` carried pc 9 as 1, and every
+                  # receive timeout resumed at the wrong bundle.)
+                  # A CLOCK is the other legitimate case: `clock :clk_25mhz`
+                  # declares a port that is not an internal signal either.
+                  known_port? =
+                    Enum.any?(d.signals, fn ps ->
+                      ps.name == connected_to and ps.direction in [:input, :output]
+                    end) or Enum.any?(d.clocks, fn c -> c.name == connected_to end)
+
+                  unless known_port? do
+                    raise Hw.Compile.Elaborate.ElabError,
+                      message:
+                        "instance `#{inst_name}` connects port `#{sig_name}` to " <>
+                          "`#{connected_to}`, which is neither a declared signal nor a " <>
+                          "port of this component. An undeclared net becomes a ONE-BIT " <>
+                          "implicit wire in Verilog, silently truncating everything " <>
+                          "wider. Declare it: `wire :#{connected_to}, #{sig.width}`.",
+                      context: {inst_name, sig_name, connected_to}
+                  end
+
                   parent_sig = %{sig | name: connected_to, direction: :internal}
                   {d, Map.put(prefixed_map, sig_name, parent_sig)}
                 parent_sig ->
