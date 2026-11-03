@@ -72,6 +72,25 @@ defmodule Hw.SPI.Master do
   SPI state machine, and only a RESETB pulse recovers it — the reads after it
   come back as zeros and look like a dead chip.
 
+  ## Which edge MOSI is launched on
+
+  The same split applies to the slave's input. Mode 0 (the default) advances
+  MOSI as SCK falls, which is right for a slave that samples on the rising edge.
+  An AD936x samples SPI_DI on the FALLING edge, the same instant the default
+  path changes MOSI, so whether it latches the old or the new bit is decided by
+  the pad skew between SCK and MOSI. On a LibreSDR (xc7z020) that skew is set by
+  routing: with the SPI logic placed next to the PS and SCK routed across the
+  die, a slow SCK path made every AD9363 read return 0. Re-routing MOSI through
+  a longer path fixed the same bitstream on three boards, which pins it on the
+  launch edge rather than on any one routing resource.
+
+  `MOSI_LAUNCH_LEADING` = 1 advances MOSI as SCK rises (from the second bit on;
+  the MSB is still set up as CS asserts), so the slave's falling-edge sample is
+  half a period from any MOSI change. It also holds CS for half a period after
+  the last falling edge (`:tail`), because the default path releases CS on the
+  same clock as that edge, a second race of the same kind. Use it together with
+  `MISO_SAMPLE_TRAILING` = 1 for AD936x parts.
+
   ## FSM states
 
   - `:idle` - CS at rest, `tx_ready` high. On `tx_valid`: latch the byte, assert
@@ -79,7 +98,10 @@ defmodule Hw.SPI.Master do
   - `:low`  - SCK-low half period. On tick: raise SCK, sample MISO, enter `:high`.
   - `:high` - SCK-high half period. On tick: lower SCK; if this was the 8th bit,
               latch `rx_data`, pulse `rx_valid`, release CS unless `cs_hold`, and
-              return to `:idle`; otherwise advance MOSI and enter `:low`.
+              return to `:idle` (via `:tail` when `MOSI_LAUNCH_LEADING` = 1);
+              otherwise advance MOSI (default path) and enter `:low`.
+  - `:tail` - only with `MOSI_LAUNCH_LEADING` = 1: one more SCK-low half period
+              after the last falling edge, then release CS unless `cs_hold`.
   """
 
   use Hw.Component
@@ -87,6 +109,10 @@ defmodule Hw.SPI.Master do
   # 0: sample MISO as SCK rises (slave updates on the falling edge, e.g. MCP2515)
   # 1: sample MISO as SCK falls (slave updates on the rising edge, e.g. AD936x)
   param :MISO_SAMPLE_TRAILING, default: 0
+  # 0: advance MOSI as SCK falls (slave samples on the rising edge)
+  # 1: advance MOSI as SCK rises and hold CS half a period past the last falling
+  #    edge (slave samples on the falling edge, e.g. AD936x)
+  param :MOSI_LAUNCH_LEADING, default: 0
   param :CLK_FREQ, default: 48_000_000
   param :SCK_FREQ, default: 4_000_000
 
@@ -117,6 +143,9 @@ defmodule Hw.SPI.Master do
   wire :zero,         1
   wire :rx_trailing,  8
   wire :rx_final,     8
+  wire :shift_rise,   1
+  wire :shift_fall,   1
+  wire :cs_late,      1
 
   comb do
     half_tick = (div_cnt == CLK_FREQ / SCK_FREQ / 2 - 1)
@@ -132,6 +161,11 @@ defmodule Hw.SPI.Master do
     # than the register's pre-edge contents.
     rx_trailing = {rx_shift_t[6..0], miso}
     rx_final = if MISO_SAMPLE_TRAILING == 1, do: rx_trailing, else: rx_shift
+
+    # MOSI launch edge. Leading: shift on every rising edge after the first.
+    shift_rise = if MOSI_LAUNCH_LEADING == 1, do: bit_cnt != 0, else: 0
+    shift_fall = if MOSI_LAUNCH_LEADING == 1, do: 0, else: 1
+    cs_late    = if MOSI_LAUNCH_LEADING == 1, do: 1, else: 0
   end
 
   # Latch a byte and open a transfer: MOSI follows tx_shift[7] (the MSB),
@@ -171,6 +205,9 @@ defmodule Hw.SPI.Master do
           sck_reg  = 1
           rx_shift = {rx_shift[6..0], miso}
           div_cnt  = 0
+          on shift_rise do
+            tx_shift = {tx_shift[6..0], zero}
+          end
           next :high
         end
 
@@ -182,16 +219,32 @@ defmodule Hw.SPI.Master do
           on bit_cnt == 7 do
             rx_data_reg  = rx_final
             rx_valid_reg = 1
-            on cs_hold_reg == 0 do
-              csn_reg = 1
+            on cs_late == 1 do
+              next :tail
             end
-            next :idle
+            on :else do
+              on cs_hold_reg == 0 do
+                csn_reg = 1
+              end
+              next :idle
+            end
           end
           on :else do
-            tx_shift = {tx_shift[6..0], zero}
-            bit_cnt  = bit_cnt + 1
+            on shift_fall do
+              tx_shift = {tx_shift[6..0], zero}
+            end
+            bit_cnt = bit_cnt + 1
             next :low
           end
+        end
+
+      :tail ->
+        on half_tick do
+          div_cnt = 0
+          on cs_hold_reg == 0 do
+            csn_reg = 1
+          end
+          next :idle
         end
     end
   end

@@ -149,6 +149,8 @@ defmodule Hw.AXI4Lite.Slave do
   # work -- they differ on every cycle after the first auto-advance, so the
   # pointer would be dragged back continuously.
   output :ctrl2_wr, 1
+  # Same for CTRL3: a push port (Hw.PhyHost's transmit buffer).
+  output :ctrl3_wr, 1
 
   # Memory window. Address bit 16 selects it: offsets below 0x10000 are the
   # register file, at or above it are `mem_rdata`.
@@ -277,6 +279,7 @@ defmodule Hw.AXI4Lite.Slave do
       s_axi_bvalid  = 0
       s_axi_bresp   = 0
       ctrl2_wr      = 0
+      ctrl3_wr      = 0
     end
 
     case wr_state do
@@ -297,6 +300,10 @@ defmodule Hw.AXI4Lite.Slave do
 
           if wr_index == 5 do
             ctrl2_wr = 1
+          end
+
+          if wr_index == 6 do
+            ctrl3_wr = 1
           end
 
           s_axi_wready = 0
