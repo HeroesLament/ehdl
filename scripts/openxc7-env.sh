@@ -22,12 +22,23 @@ export PATH="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/bin:$OXC7/nextpnr
 export OXC7_PYTHON="$OXC7/venv/bin/python"
 export OXC7_ROOT="$OXC7"
 
+# The successor tool (openXC7/nextpnr, himbaechel xilinx uarch; nextpnr-xilinx
+# was archived 2026-09-25).  build.exs uses it when PNR=himbaechel.  Its chipdb
+# is generated from a pinned prjxray-db revision (the one its CI pins; a
+# separate worktree so the nextpnr-xilinx flow's database is untouched), and
+# FASM it emits must be resolved against that same revision.  build/ is
+# upstream main, build-ourfork/ is main plus the ported fix/* branches;
+# NEXTPNR_HIMBAECHEL_BUILD picks one (default ourfork).
+export PRJXRAY_DB_HIMBAECHEL="$OXC7/prjxray-db-517d66a"
+export NEXTPNR_HIMBAECHEL="$OXC7/nextpnr/build-${NEXTPNR_HIMBAECHEL_BUILD:-ourfork}/nextpnr-himbaechel"
+
 echo "openXC7 env:"
 echo "  PRJXRAY_DB = $PRJXRAY_DB"
 echo "  XC7_CHIPDB = $XC7_CHIPDB"
 for t in yosys nextpnr-xilinx fasm2frames xc7frames2bit; do
   printf "  %-16s %s\n" "$t" "$(command -v $t || echo MISSING)"
 done
+printf "  %-16s %s\n" "himbaechel" "$([ -x "$NEXTPNR_HIMBAECHEL" ] && echo "$NEXTPNR_HIMBAECHEL" || echo MISSING) (PNR=himbaechel)"
 
 # WHICH nextpnr. The binary is $OXC7/nextpnr-xilinx/build/nextpnr-xilinx, whose
 # contents depend entirely on the branch checked out in that tree -- so a
