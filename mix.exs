@@ -19,7 +19,7 @@ defmodule EHDL.MixProject do
     [
       licenses: ["MIT", "Apache-2.0"],
       links: %{"GitHub" => "https://github.com/HeroesLament/ehdl"},
-      files: ~w(lib native designs mix.exs README.md LICENSE.md LICENSE-MIT LICENSE-APACHE)
+      files: ~w(lib native mix.exs README.md LICENSE.md LICENSE-MIT LICENSE-APACHE)
     ]
   end
 
@@ -27,8 +27,8 @@ defmodule EHDL.MixProject do
     [extra_applications: [:logger]]
   end
 
-  defp elixirc_paths(:prod), do: ["lib", "designs"]
-  defp elixirc_paths(_),     do: ["lib", "designs"]
+  defp elixirc_paths(:prod), do: ["lib"]
+  defp elixirc_paths(_),     do: ["lib"]
 
   defp deps do
     [
