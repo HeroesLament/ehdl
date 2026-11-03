@@ -46,6 +46,19 @@ defmodule Hw.Sim.Schedule do
       :regs,          # [%Reg{}] sequential ops only
       :inputs,        # [atom] signal names this entity reads
       :outputs,       # [atom] signal names this entity writes
+      :edge_ops,      # [op] | nil — _top_ only (hierarchical designs): minimal
+                      #   comb closure feeding _top_'s own regs, evaluated per edge
+                      #   instead of the full comb set
+      :edge_inputs,   # [atom] | nil — external ETS reads needed by edge_ops
+      :settle_ops,    # [op] | nil — _top_ only: comb/tristate closure for
+                      #   everything the rest of the design sees of _top_ (official
+                      #   cross signals + op-level hidden-prefix consumers +
+                      #   tristate line resolution). Promoted to the schedule's
+                      #   cross_settle_ops, evaluated by the CLOCK after all
+                      #   commits — deterministic last-writer ordering.
+      :settle_inputs, # [atom] | nil — external ETS reads needed by settle_ops
+      :env_inputs,    # [atom] | nil — _top_ only: external ETS reads needed by the
+                      #   FULL comb set (targeted build_env for eval_now/force_reg)
     ]
   end
 
@@ -124,6 +137,22 @@ defmodule Hw.Sim.Schedule do
     memories = design.ops
       |> Enum.filter(&match?(%Mem{}, &1))
       |> Map.new(fn mem -> {mem.name, mem.init} end)
+
+    # M0: precompute _top_'s per-edge op restriction and targeted env read sets.
+    # See enrich_top_entity/2 for the reasoning. When the restriction is active,
+    # the settle closure it computes REPLACES cross_settle_ops: it is a superset
+    # of the old top-comb cross closure (same expansion, wider seed) and runs in
+    # the clock AFTER all commits — which also resolves, deterministically, the
+    # multi-writer races legacy resolved by _top_'s slowness (e.g. a Tristate in
+    # _top_ and an Assign in phy both writing phy_dp_tx every edge; the Tristate
+    # resolution must land last).
+    entities = enrich_top_entity(entities, cross_signals)
+
+    {cross_settle_ops, cross_settle_inputs} =
+      case Map.get(entities, :_top_) do
+        %{settle_ops: ops, settle_inputs: inputs} when is_list(ops) -> {ops, inputs}
+        _ -> {cross_settle_ops, cross_settle_inputs}
+      end
 
     %__MODULE__{
       entities:             entities,
@@ -274,6 +303,190 @@ defmodule Hw.Sim.Schedule do
       _ -> []
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # _top_ per-edge restriction (M0)
+  # ---------------------------------------------------------------------------
+  # _top_ owns every anonymous intermediate op in the design (~40k on
+  # HelloBoard.Top) and historically re-evaluated ALL of them on every clock
+  # edge — twice (phase 1 and commit) — to settle cross-entity comb. That role
+  # has been superseded:
+  #   * cross-entity comb is settled inline by Hw.Sim.Clock via
+  #     cross_settle_ops (~9 ops on HelloBoard),
+  #   * testbench reads of _top_ outputs go through top_signal_closures
+  #     (lazy per-signal eval in Hw.Sim.Testbench.get),
+  #   * other entities carry copies of the anonymous ops they need
+  #     (copy_needed_ops/4).
+  # Per edge, _top_ therefore only needs the transitive comb closure feeding
+  # its OWN registers — exactly what copy_needed_ops computes for every other
+  # entity. We precompute that closure here, plus targeted ETS read sets so
+  # build_env never has to materialise the whole signal table.
+  #
+  # Restriction applies only to hierarchical designs (>1 entity). For a flat
+  # component everything lives in _top_ and the full eval IS the simulation —
+  # restricting it would change per-tick ETS/trace visibility for no win.
+  #
+  # The FULL comb set stays available on the explicit testbench path
+  # (Entity.eval_now via Testbench.set / force_reg), which uses env_inputs
+  # for targeted reads instead of an ETS snapshot.
+  # Escape hatch: HW_SIM_TOP_FULL=1 restores the legacy behaviour (full _top_
+  # comb eval every edge, snapshot-based env). Kept so the two paths can be
+  # differentially tested against each other on the same build — and as an
+  # operational fallback if a design surfaces a hole in the closure logic.
+  defp enrich_top_entity(entities, cross_signals) do
+    if System.get_env("HW_SIM_TOP_FULL") == "1" do
+      entities
+    else
+      do_enrich_top_entity(entities, cross_signals)
+    end
+  end
+
+  defp do_enrich_top_entity(entities, cross_signals) do
+    case Map.get(entities, :_top_) do
+      nil -> entities
+      top ->
+        reg_out_names = MapSet.new(top.regs, & &1.output.name)
+
+        # Mirror Hw.Sim.Entity.init/1's comb_ops filter exactly: no Reg, Mem,
+        # Blackbox, and no Assign that writes a reg output (elaborator
+        # intermediate feeding the Reg — evaluating it would clobber force_reg).
+        comb = Enum.reject(top.ops, fn op ->
+          match?(%Reg{}, op) or match?(%Mem{}, op) or match?(%Blackbox{}, op) or
+            (match?(%Assign{}, op) and MapSet.member?(reg_out_names, op.output.name))
+        end)
+
+        produced_full = comb |> Enum.flat_map(&outs_of/1) |> MapSet.new()
+
+        env_inputs = comb
+          |> Enum.flat_map(&reads_of/1)
+          |> Enum.uniq()
+          |> Enum.reject(&MapSet.member?(produced_full, &1))
+
+        top = %{top | env_inputs: env_inputs}
+
+        top =
+          if map_size(entities) > 1 do
+            # Output-name -> producing-op map over the filtered comb set. Built
+            # via output_signal_names so Tristate ops (no :output field; they
+            # "produce" their input_value signal) participate in closures.
+            by_out =
+              comb
+              |> Enum.flat_map(fn op -> Enum.map(outs_of(op), &{&1, op}) end)
+              |> Map.new()
+
+            # -- Edge set: ops feeding _top_'s own registers ------------------
+            seed = top.regs |> Enum.flat_map(&reads_of/1) |> MapSet.new()
+            edge_deps = expand_reads(seed, seed, by_out)
+            {edge_ops, edge_inputs} = closure_ops(comb, edge_deps, seed)
+
+            # -- Settle set: what the rest of the design sees of _top_ --------
+            # Seeded with (a) the official cross_signals (subsumes the old
+            # top-comb cross closure), (b) _top_-produced signals other
+            # entities' ops read at the OP level — entity_inputs' prefix filter
+            # hides e.g. phy_dp_tx from cross detection — and (c) every
+            # Tristate op's writes: a Tristate resolves the LINE value of
+            # signals an entity also computes (phy_dp_tx has two writers per
+            # edge), and raw-ETS observers (Hw.Sim.USBHost, trace) read those.
+            # This whole closure is evaluated by the clock AFTER all commits
+            # (it replaces cross_settle_ops), so the tristate resolution lands
+            # deterministically last — the ordering legacy got from _top_'s
+            # full eval being slow.
+            others_ext_reads =
+              entities
+              |> Enum.reject(fn {n, _} -> n == :_top_ end)
+              |> Enum.flat_map(fn {_, e} ->
+                prod = e.ops |> Enum.flat_map(&outs_of/1) |> MapSet.new()
+                e.ops |> Enum.flat_map(&reads_of/1) |> Enum.reject(&MapSet.member?(prod, &1))
+              end)
+              |> MapSet.new()
+
+            tristate_outs =
+              top.ops
+              |> Enum.filter(&match?(%Tristate{}, &1))
+              |> Enum.flat_map(&outs_of/1)
+              |> MapSet.new()
+
+            settle_out =
+              produced_full
+              |> MapSet.intersection(others_ext_reads)
+              |> MapSet.union(tristate_outs)
+              |> MapSet.union(MapSet.new(cross_signals))
+
+            settle_deps = expand_reads(settle_out, settle_out, by_out)
+            {settle_ops, settle_inputs} = closure_ops(comb, settle_deps, settle_out)
+
+            %{top | edge_ops: edge_ops, edge_inputs: edge_inputs,
+                    settle_ops: settle_ops, settle_inputs: settle_inputs}
+          else
+            top
+          end
+
+        Map.put(entities, :_top_, top)
+    end
+  end
+
+  # Structural output extractor for the M0 closure machinery. The
+  # hand-enumerated output_signal_names/1 below predates half the op set —
+  # %Neq{}, %Lte{}, %Shl{}, %ZeroExtend{}, %Popcount{} etc. all fall through
+  # to [] there, which silently breaks any dependency walk that relies on it
+  # (found the hard way: a _neq_ op in lat_hb_moved's chain was invisible to
+  # the edge closure). The generic %{output: %Signal{}} pattern covers every
+  # single-output op by shape; Blackbox and Tristate need their own clauses.
+  defp outs_of(%Blackbox{ports: ports}) do
+    for {_, %Signal{name: n}} <- ports, do: n
+  end
+  defp outs_of(%Tristate{input_value: %Signal{name: n}}), do: [n]
+  defp outs_of(%{output: %Signal{name: n}}), do: [n]
+  defp outs_of(_), do: []
+
+  # Transitive-dependency expansion like expand_deps/3, but using reads_of/1
+  # (structural walk) so Tristate, MemRead and any future op type participate.
+  defp expand_reads(frontier, visited, by_out) do
+    if MapSet.size(frontier) == 0 do
+      visited
+    else
+      new_frontier = Enum.reduce(frontier, MapSet.new(), fn name, acc ->
+        case Map.get(by_out, name) do
+          nil -> acc
+          op  -> MapSet.union(acc, MapSet.difference(MapSet.new(reads_of(op)), visited))
+        end
+      end)
+      expand_reads(new_frontier, MapSet.union(visited, new_frontier), by_out)
+    end
+  end
+
+  # Given a dep-name set, select the producing ops (in existing topo order) and
+  # compute the external read set (dep/seed names not produced by the selection).
+  defp closure_ops(comb, deps, seed) do
+    ops = Enum.filter(comb, fn op ->
+      Enum.any?(outs_of(op), &MapSet.member?(deps, &1))
+    end)
+
+    produced = ops |> Enum.flat_map(&outs_of/1) |> MapSet.new()
+
+    inputs = (Enum.flat_map(ops, &reads_of/1) ++ MapSet.to_list(seed))
+      |> Enum.uniq()
+      |> Enum.reject(&MapSet.member?(produced, &1))
+
+    {ops, inputs}
+  end
+
+  # Every signal name an op can read, by structural walk — robust against op
+  # types the hand-enumerated input_signal_names/1 clauses don't know about
+  # (shifts, popcount, ...). Over-collection is harmless: an extra name just
+  # costs one ETS read. MemRead's memory is an atom, not a Signal, so it gets
+  # its own clause.
+  defp reads_of(%MemRead{} = op), do: [op.memory | deep_signals(Map.from_struct(op), [])]
+  defp reads_of(op), do: op |> Map.from_struct() |> deep_signals([])
+
+  defp deep_signals(%Signal{name: n}, acc), do: [n | acc]
+  defp deep_signals(%_{} = struct, acc), do: deep_signals(Map.from_struct(struct), acc)
+  defp deep_signals(%{} = map, acc),
+    do: Enum.reduce(map, acc, fn {_k, v}, a -> deep_signals(v, a) end)
+  defp deep_signals(list, acc) when is_list(list),
+    do: Enum.reduce(list, acc, &deep_signals/2)
+  defp deep_signals({a, b}, acc), do: deep_signals(a, deep_signals(b, acc))
+  defp deep_signals(_, acc), do: acc
 
   defp entity_for_op(%Blackbox{name: name}), do: entity_from_signal_name(name)
   defp entity_for_op(%Tristate{io: %Signal{name: name}}), do: entity_from_signal_name(name)
@@ -780,16 +993,6 @@ defmodule Hw.Sim.Schedule do
     |> Enum.uniq()
   end
   defp input_signal_names(_), do: []
-
-  defp deep_signals(%Signal{name: n}, acc), do: [n | acc]
-  defp deep_signals(%_{} = struct, acc), do: deep_signals(Map.from_struct(struct), acc)
-  defp deep_signals(%{} = map, acc),
-    do: Enum.reduce(map, acc, fn {_k, v}, a -> deep_signals(v, a) end)
-  defp deep_signals(list, acc) when is_list(list),
-    do: Enum.reduce(list, acc, &deep_signals/2)
-  defp deep_signals({a, b}, acc), do: deep_signals(a, deep_signals(b, acc))
-  defp deep_signals(_, acc), do: acc
-
 
   defp sig_names(list) do
     list

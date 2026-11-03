@@ -67,7 +67,83 @@ failures, unstash. Twice in this repo's history a change has been blamed for
 failures that were already there — and once, a cluster that was nobody's fault
 was assumed to be nobody's problem.
 
-## The simulator runs at ~4 ticks/s, and 87% of that is wasted work
+## The simulator ran at ~4 ticks/s — FIXED, now ~350 ticks/s (~87×)
+
+The fix landed as picoBEAM's M0. Measured on `HelloBoard.Top` with
+`_prim/tick_bench.exs`, before and after, same machine, same day:
+
+    before:  200 ticks in 48.9 s   ->    4 ticks/s
+    after:   200 ticks in  0.58 s  ->  344 ticks/s
+             1000 ticks             ->  362 ticks/s
+             5000 ticks             ->  359 ticks/s
+
+    reductions over 5 ticks, after:  sie 894k, cdc 835k, _top_ 790k
+    (was: _top_ 14.97M = 87% of everything)
+
+What changed, all in `Hw.Sim.Schedule` + `Hw.Sim.Entity`, hierarchical designs
+only (flat components are untouched):
+
+1. **Per-edge, `_top_` evaluates only the comb closure feeding its own regs**
+   (`edge_ops`, precomputed in the schedule) with a targeted ETS read set —
+   not all ~40k ops over a full `tab2list` snapshot, twice.
+2. **`_top_`'s commit-phase comb eval is gone.** Everything the rest of the
+   design sees of `_top_` — official cross signals, prefix-hidden consumers,
+   tristate line resolution — is one precomputed settle closure that
+   **replaces `cross_settle_ops`** and runs in the clock after ALL commits.
+3. **`build_env(:_top_)` reads only `env_inputs`** (the full comb set's
+   external reads) on the explicit paths (`eval_now` via `set`/`force_reg`).
+
+Escape hatch: `HW_SIM_TOP_FULL=1` rebuilds the legacy schedule; keep it — it
+is what `_prim/m0_lockstep.exs` diffs the fast path against.
+
+Verification: `_prim/m0_closure_check.exs` (all 94 `_top_` reg-next values,
+full eval vs closure: 0 mismatches) and `_prim/m0_lockstep.exs` (480 lockstep
+ticks against legacy, every named signal via `Hw.Sim.get`: 0 divergent).
+
+### Three bugs the closure work surfaced — two latent, one semantic
+
+- **`output_signal_names/1` (and `output_signal/1`) predate half the op set.**
+  `%Neq{}`, `%Lte{}`, `%Shl{}`, `%ZeroExtend{}`, `%Popcount{}` and friends
+  all fall through to "no output". The closure machinery uses its own
+  structural `outs_of/1` (generic `%{output: %Signal{}}` match) — but the
+  OLD helpers still drive entity partitioning (`entity_for_op`), topo-sort
+  producer maps and cross detection. A `%Neq{}` op is invisible to all of
+  them today. Nothing currently observable is known-broken by it, but any
+  future dependency walk must NOT reuse those helpers unaudited.
+- **`phy_dp_tx` has two ETS writers per edge, and legacy resolved the race
+  by accident.** The phy's comb writes the register alias; `_top_`'s
+  Tristate on the USB pin writes the resolved line value. Legacy's full
+  `_top_` eval was slow, so the Tristate always landed last. Any change to
+  eval scheduling flips such races — which is why the settle closure runs
+  in the clock, after every commit, where ordering is structural. If a
+  signal ever looks "half updated", look for a second writer first.
+- **`entity_inputs/2` hides cross-entity signals whose name carries the
+  consumer's own prefix** (`internal_prefix?`), so `find_cross_signals`
+  never sees e.g. `phy_dp_tx` consumed by `_top_`. The settle closure seeds
+  from op-level reads instead. `cross_signals` itself still has the blind
+  spot — audit before reusing it.
+
+### Known residue
+
+- 12 failures remain in the HelloBoard suite (LoopbackTest, UARTRXTest EP1
+  assertions, UARTTX frame tests, PHYDebug waveform) — **classified
+  pre-existing, not an M0 regression, by running the oracle**:
+  `HW_SIM_TOP_FULL=1 mix test test/hello_board_uart_rx_test.exs:46
+  --timeout 3600000` fails identically (`cdc_ep1_in_busy` 0, expected 1)
+  after 975 s on the legacy path. These tests could never finish before M0
+  (a 115200-baud byte ≈ 4.6k ticks was ~20 min at 4 ticks/s, over ExUnit's
+  60 s default timeout), so they have no passing baseline at any point in
+  history: the uart_rx → cdc → EP1 load path has a real, now-debuggable
+  defect (or stale test expectations) that M0 made visible. The next person
+  in this file inherits it as an ordinary bug, not a mystery.
+- `_top_`'s comb values not in the settle closure are no longer refreshed in
+  ETS every edge. `Hw.Sim.get` covers them lazily via `top_signal_closures`;
+  anything reading raw ETS for arbitrary `_top_` comb intermediates (VCD of
+  a hierarchical design, custom scripts) sees stale values between explicit
+  evals. Tristate outputs and everything any entity reads are settled fresh.
+
+The original diagnosis below is kept for the record — it was right, and the
+reduction-delta method it describes is still the cheap tool here.
 
 Measured on `HelloBoard.Top`, `_prim/tick_bench.exs` and `_prim/tick_reds.exs`:
 

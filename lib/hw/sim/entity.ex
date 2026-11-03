@@ -148,12 +148,20 @@ defmodule Hw.Sim.Entity do
 
   @impl true
   def handle_info({:edge, :rising, time_ps, from: clock_pid}, state) do
+    # M0: _top_ in a hierarchical design evaluates only the comb closure that
+    # feeds its own registers (spec.edge_ops), with a matching targeted read
+    # set — not the full ~40k-op comb set over a full ETS snapshot. Cross-
+    # entity comb is settled inline by the clock (cross_settle_ops) and
+    # testbench reads go through top_signal_closures, so nothing else needs
+    # _top_'s full set per edge. Every other entity: unchanged.
+    edge_ops = state.spec.edge_ops || state.comb_ops
+
     # Build eval env from ETS + current reg state
-    env = build_env(state)
+    env = build_edge_env(state)
 
     # Evaluate comb ops first so internal signals (like uart_tx_tick) are
     # available when computing reg-next values below.
-    {comb_env, _} = Enum.reduce(state.comb_ops, {env, []}, fn op, {env, acc} ->
+    {comb_env, _} = Enum.reduce(edge_ops, {env, []}, fn op, {env, acc} ->
       results = Eval.eval(op, env, state.widths, state.memories)
       new_env = Enum.reduce(results, env, fn {name, val}, e -> Map.put(e, name, val) end)
       {new_env, results ++ acc}
@@ -191,8 +199,23 @@ defmodule Hw.Sim.Entity do
     # Write reg values to ETS so other entities and testbench can read them
     State.put_many(new_reg_state, time_ps, state.sim_id)
 
-    # Evaluate comb ops and write to ETS
-    state = do_eval_comb(state, time_ps)
+    # Evaluate comb ops and write to ETS.
+    # M0: _top_ (hierarchical) skips this entirely. Its regs are already in
+    # ETS above; everything the rest of the design (or a raw-ETS observer)
+    # needs from _top_'s comb — including tristate line resolution — is in the
+    # schedule's settle closure, which the CLOCK evaluates after ALL commits
+    # land (cross_settle_ops). Doing any of it here would race other entities'
+    # commit writes; doing it in the clock is deterministic, and matches the
+    # write ordering legacy produced by _top_'s full eval finishing last.
+    # Testbench reads of the remaining _top_ comb go through
+    # top_signal_closures. The full eval here was the second of two full
+    # evaluations per edge (87% of all simulation reductions on HelloBoard).
+    state =
+      if state.spec.edge_ops do
+        state
+      else
+        do_eval_comb(state, time_ps)
+      end
 
     # Notify the clock that sent this commit that we're done
     send(clock_pid, {:commit_done, self()})
@@ -228,7 +251,17 @@ defmodule Hw.Sim.Entity do
 
   # Build the evaluation environment: targeted ETS reads for external inputs
   # plus current reg state for this entity's own registers.
-  # _top_ uses a full snapshot since it reads signals from all entities.
+  #
+  # M0: _top_ no longer materialises the whole signal table (tab2list of ~40k
+  # signals per edge). The schedule precomputes env_inputs — the external
+  # signals _top_'s full comb set actually reads — and we read exactly those.
+  # The snapshot clause remains only as a fallback for schedules built before
+  # env_inputs existed.
+  defp build_env(%{spec: %{name: :_top_, env_inputs: inputs}} = state) when is_list(inputs) do
+    ets_vals = Map.new(inputs, fn sig -> {sig, State.get(sig, state.sim_id)} end)
+    Map.merge(ets_vals, state.reg_state)
+  end
+
   defp build_env(%{spec: %{name: :_top_}} = state) do
     ets_vals = Hw.Sim.State.snapshot(state.sim_id)
     Map.merge(ets_vals, state.reg_state)
@@ -240,6 +273,15 @@ defmodule Hw.Sim.Entity do
       |> Map.new()
     Map.merge(ets_vals, state.reg_state)
   end
+
+  # Per-edge env for _top_ when the schedule provides the restricted read set
+  # (hierarchical designs): read only what the reg-feeding closure needs.
+  defp build_edge_env(%{spec: %{name: :_top_, edge_inputs: inputs}} = state) when is_list(inputs) do
+    ets_vals = Map.new(inputs, fn sig -> {sig, State.get(sig, state.sim_id)} end)
+    Map.merge(ets_vals, state.reg_state)
+  end
+
+  defp build_edge_env(state), do: build_env(state)
 
   # Evaluate all comb ops in order, accumulating outputs, then write to ETS
   defp do_eval_comb(state, time_ps) do
