@@ -193,7 +193,7 @@ defmodule Hw.Emit.Verilog do
   defp emit_localparams(%Design{localparams: localparams}) do
     ["" , "  // State encoding" |
       Enum.map(localparams, fn lp ->
-        "  localparam #{lp.name} = #{lp.width}'d#{lp.value};"
+        "  localparam #{lp.name} = #{lp.width}'d#{Hw.Emit.Verilog.Ops.Value.lit(lp.value, lp.width)};"
       end)
     ]
   end
@@ -286,7 +286,7 @@ defmodule Hw.Emit.Verilog do
     lines = init
     |> Enum.with_index()
     |> Enum.map(fn {value, idx} ->
-      "    #{name}[#{idx}] = #{width}'d#{value};"
+      "    #{name}[#{idx}] = #{width}'d#{Hw.Emit.Verilog.Ops.Value.lit(value, width)};"
     end)
 
     ["  initial begin"] ++ lines ++ ["  end"]
@@ -316,7 +316,7 @@ defmodule Hw.Emit.Verilog do
       _ ->
         ["  // Initial values" |
           Enum.map(signals_with_init, fn sig ->
-            "  initial #{sig.name} = #{sig.width}'d#{sig.init};"
+            "  initial #{sig.name} = #{sig.width}'d#{Hw.Emit.Verilog.Ops.Value.lit(sig.init, sig.width)};"
           end)
         ]
     end

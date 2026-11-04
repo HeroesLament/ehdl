@@ -14,8 +14,18 @@ defmodule Hw.Emit.Verilog.Ops.Value do
   def emit_value(%Const{value: val, width: width, signed: signed}) do
     sign_prefix = if signed == :signed, do: "$signed(", else: ""
     sign_suffix = if signed == :signed, do: ")", else: ""
-    "#{sign_prefix}#{width}'d#{val}#{sign_suffix}"
+    "#{sign_prefix}#{width}'d#{lit(val, width)}#{sign_suffix}"
   end
+
+  @doc """
+  Decimal digits of an integer constant for a sized `'d` literal. A negative
+  value (e.g. a folded `0 - 17003`) becomes its two's complement at `width`:
+  `32'd-17003` is not Verilog.
+  """
+  def lit(val, width) when is_integer(val) and val < 0 and is_integer(width) and width > 0,
+    do: Bitwise.band(val, Bitwise.bsl(1, width) - 1)
+
+  def lit(val, _width), do: val
 
   def emit_value(atom) when is_atom(atom), do: Atom.to_string(atom)
 
