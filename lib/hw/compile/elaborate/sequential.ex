@@ -40,11 +40,12 @@ defmodule Hw.Compile.Elaborate.Sequential do
   end
 
   def find_all_assigned(statements, enable_cond) when is_list(statements) do
-    {signals, mems} = statements
-    |> Enum.map(&find_assigned_in_statement(&1, enable_cond))
-    |> Enum.reduce({[], []}, fn {s, m}, {acc_s, acc_m} ->
-      {acc_s ++ s, acc_m ++ m}
-    end)
+    {signals, mems} =
+      statements
+      |> Enum.map(&find_assigned_in_statement(&1, enable_cond))
+      |> Enum.reduce({[], []}, fn {s, m}, {acc_s, acc_m} ->
+        {acc_s ++ s, acc_m ++ m}
+      end)
 
     {Enum.uniq(signals), mems}
   end
@@ -53,34 +54,47 @@ defmodule Hw.Compile.Elaborate.Sequential do
     case target do
       {:mem_write, mem_name, addr_expr} ->
         {[], [{mem_name, addr_expr, value, enable_cond}]}
+
       target when is_atom(target) ->
         {[target], []}
     end
   end
 
-  defp find_assigned_in_statement(%{type: :if, condition: cond_expr, then_body: then_body, else_body: else_body}, enable_cond) do
+  defp find_assigned_in_statement(
+         %{type: :if, condition: cond_expr, then_body: then_body, else_body: else_body},
+         enable_cond
+       ) do
     then_enable = {:land, enable_cond, cond_expr}
     {then_sigs, then_mems} = find_all_assigned(then_body, then_enable)
 
-    {else_sigs, else_mems} = if else_body do
-      else_enable = {:land, enable_cond, {:lnot, cond_expr}}
-      find_all_assigned(else_body, else_enable)
-    else
-      {[], []}
-    end
+    {else_sigs, else_mems} =
+      if else_body do
+        else_enable = {:land, enable_cond, {:lnot, cond_expr}}
+        find_all_assigned(else_body, else_enable)
+      else
+        {[], []}
+      end
 
     {then_sigs ++ else_sigs, then_mems ++ else_mems}
   end
 
   defp find_assigned_in_statement(%{type: :case, clauses: clauses}, enable_cond) do
-    {sigs, mems} = Enum.reduce(clauses, {[], []}, fn %{body: body}, {acc_s, acc_m} ->
-      {s, m} = find_all_assigned(body, enable_cond)
-      {acc_s ++ s, acc_m ++ m}
-    end)
+    {sigs, mems} =
+      Enum.reduce(clauses, {[], []}, fn %{body: body}, {acc_s, acc_m} ->
+        {s, m} = find_all_assigned(body, enable_cond)
+        {acc_s ++ s, acc_m ++ m}
+      end)
+
     {sigs, mems}
   end
 
   defp find_assigned_in_statement(_, _enable_cond), do: {[], []}
+
+  # Whether `statements` (nil for an absent else) assign `target` anywhere.
+  defp assigns?(nil, _target), do: false
+
+  defp assigns?(statements, target) when is_list(statements),
+    do: target in elem(find_all_assigned(statements), 0)
 
   # --- Find All Assignments (for comb blocks) ---
 
@@ -93,9 +107,29 @@ defmodule Hw.Compile.Elaborate.Sequential do
 
   # --- Build Mux Tree ---
 
-  def build_mux_tree(statements, target_name, signal_map, instance_map, memory_map, design, opts \\ []) do
+  def build_mux_tree(
+        statements,
+        target_name,
+        signal_map,
+        instance_map,
+        memory_map,
+        design,
+        opts \\ []
+      ) do
     comb = Keyword.get(opts, :comb, false)
-    {value, design} = build_mux_from_statements(statements, target_name, signal_map, instance_map, memory_map, design, comb, nil)
+
+    {value, design} =
+      build_mux_from_statements(
+        statements,
+        target_name,
+        signal_map,
+        instance_map,
+        memory_map,
+        design,
+        comb,
+        nil
+      )
+
     {value, design}
   end
 
@@ -107,18 +141,29 @@ defmodule Hw.Compile.Elaborate.Sequential do
   defp materialize(nil, design, _signal_map, _target_name), do: {nil, design}
   defp materialize(%Signal{} = s, design, _signal_map, _target_name), do: {s, design}
   defp materialize(%Const{} = c, design, _signal_map, _target_name), do: {c, design}
+
   defp materialize(expr, design, signal_map, target_name) do
     target_sig = Map.get(signal_map, target_name)
-    width  = if target_sig, do: target_sig.width,  else: 1
+    width = if target_sig, do: target_sig.width, else: 1
     signed = if target_sig, do: target_sig.signed, else: :unsigned
     tmp_name = :"_default_#{target_name}_#{Hw.Compile.Elaborate.Gensym.next()}"
-    tmp_sig  = %Signal{name: tmp_name, width: width, signed: signed, direction: :internal}
+    tmp_sig = %Signal{name: tmp_name, width: width, signed: signed, direction: :internal}
     d1 = Design.add_signal(design, tmp_sig)
     d2 = Design.add_op(d1, %Hw.IR.Ops.Assign{output: tmp_sig, input: expr})
     {tmp_sig, d2}
   end
 
-  defp build_mux_from_statements(statements, target_name, signal_map, instance_map, memory_map, design, comb, init_value) when is_list(statements) do
+  defp build_mux_from_statements(
+         statements,
+         target_name,
+         signal_map,
+         instance_map,
+         memory_map,
+         design,
+         comb,
+         init_value
+       )
+       when is_list(statements) do
     # Look up target signal width so that bare integer constants assigned to this
     # signal get the correct width in mux arms (instead of defaulting to 32-bit).
     target_sig = Map.get(signal_map, target_name)
@@ -127,22 +172,40 @@ defmodule Hw.Compile.Elaborate.Sequential do
     fix_const = fn
       %Const{width: 32} = c when target_sig != nil ->
         %Const{c | width: target_sig.width, signed: target_sig.signed}
-      other -> other
+
+      other ->
+        other
     end
 
     # The hold value: what this signal evaluates to if nothing in this scope
-    # assigns it. In comb mode, unassigned signals default to 0. In sequential
-    # mode, if an outer scope established a value use that, otherwise hold
-    # the register's current value.
+    # assigns it. An earlier assignment in an enclosing scope wins in both
+    # modes (it arrives as the materialized `mat_val`, see the :if and :case
+    # arms). With none: comb signals default to 0, registers hold their
+    # current value.
     hold = fn d ->
       case {comb, init_value} do
-        {true,  _}   -> {fix_const.(%Const{value: 0, width: (if target_sig, do: target_sig.width, else: 1), signed: :unsigned}), d}
-        {false, nil} -> {fix_const.(Map.fetch!(signal_map, target_name)), d}
-        {false, v}   -> {fix_const.(v), d}
+        {true, _} ->
+          {fix_const.(%Const{
+             value: 0,
+             width: if(target_sig, do: target_sig.width, else: 1),
+             signed: :unsigned
+           }), d}
+
+        {false, nil} ->
+          {fix_const.(Map.fetch!(signal_map, target_name)), d}
+
+        {false, v} ->
+          {fix_const.(v), d}
       end
     end
 
-    Enum.reduce(statements, {init_value, design}, fn stmt, {current_value, d} ->
+    # In comb mode a scope's running value starts at nil (nothing assigned in
+    # this scope yet) and `init_value` is the enclosing scope's value in
+    # effect, the default for branches below that do not assign the signal.
+    # In sequential mode `init_value` seeds the running value.
+    start = if comb, do: nil, else: init_value
+
+    Enum.reduce(statements, {start, design}, fn stmt, {current_value, d} ->
       case stmt do
         %{type: :assign, target: ^target_name, value: expr} ->
           {value, d2} = Expr.build_expr(expr, signal_map, instance_map, memory_map, d)
@@ -150,16 +213,55 @@ defmodule Hw.Compile.Elaborate.Sequential do
 
         %{type: :if, condition: cond_expr, then_body: then_body, else_body: else_body} ->
           {cond_val, d2} = Expr.build_expr(cond_expr, signal_map, instance_map, memory_map, d)
-          # Materialize current_value before branching to avoid duplicating
-          # complex expression trees. Only in sequential mode — comb has no
-          # carry-forward value and materialization would create comb loops.
-          {mat_val, d3} = if comb, do: {nil, d2}, else: materialize(current_value, d2, signal_map, target_name)
-          {then_value, d4} = build_mux_from_statements(then_body, target_name, signal_map, instance_map, memory_map, d3, comb, mat_val)
-          {else_value, d5} = if else_body do
-            build_mux_from_statements(else_body, target_name, signal_map, instance_map, memory_map, d4, comb, mat_val)
-          else
-            {nil, d4}
-          end
+          # Materialize the value in effect before branching, so each arm
+          # refers to one signal instead of a copy of the expression tree.
+          # In comb mode too, when a branch assigns this signal:
+          # `s = a; if c do s = b end` is `c ? b : a` (Elixir scoping, and
+          # Verilog always @* semantics). The value in effect is an expression
+          # of other signals assigned earlier (this scope's, else the
+          # enclosing scope's `init_value`; nil if none, then 0), so its temp
+          # signal adds no loop the source does not already have. Comb mode
+          # used to skip this, which dropped the earlier assignment and
+          # lowered the missing arm to 0.
+          {mat_val, d3} =
+            cond do
+              not comb ->
+                materialize(current_value, d2, signal_map, target_name)
+
+              assigns?(then_body, target_name) or assigns?(else_body, target_name) ->
+                materialize(current_value || init_value, d2, signal_map, target_name)
+
+              true ->
+                {nil, d2}
+            end
+
+          {then_value, d4} =
+            build_mux_from_statements(
+              then_body,
+              target_name,
+              signal_map,
+              instance_map,
+              memory_map,
+              d3,
+              comb,
+              mat_val
+            )
+
+          {else_value, d5} =
+            if else_body do
+              build_mux_from_statements(
+                else_body,
+                target_name,
+                signal_map,
+                instance_map,
+                memory_map,
+                d4,
+                comb,
+                mat_val
+              )
+            else
+              {nil, d4}
+            end
 
           if then_value != nil or else_value != nil do
             {hv, d6} = if mat_val != nil, do: {fix_const.(mat_val), d5}, else: hold.(d5)
@@ -185,69 +287,109 @@ defmodule Hw.Compile.Elaborate.Sequential do
           check_duplicate_literal_arms!(clauses)
 
           {case_val, d2} = Expr.build_expr(case_expr, signal_map, instance_map, memory_map, d)
-          # Materialize before branching into clauses. Skip in comb mode.
-          {mat_val, d3} = if comb, do: {nil, d2}, else: materialize(current_value, d2, signal_map, target_name)
+          # Materialize before branching into clauses (as for :if, in comb
+          # mode only when some clause assigns this signal): selector values
+          # no arm covers, and arms that do not assign this signal, keep the
+          # value in effect.
+          {mat_val, d3} =
+            cond do
+              not comb ->
+                materialize(current_value, d2, signal_map, target_name)
+
+              Enum.any?(clauses, &assigns?(&1.body, target_name)) ->
+                materialize(current_value || init_value, d2, signal_map, target_name)
+
+              true ->
+                {nil, d2}
+            end
 
           check_catch_all_arms!(clauses)
           last_index = length(clauses) - 1
 
-          {case_arms, default_value, d4} = Enum.reduce(Enum.with_index(clauses), {[], nil, d3}, fn {clause, index}, {arms, default_val, acc_d} ->
-            %{pattern: pattern, body: body} = clause
-            resolved_body = resolve_captures(body, case_val)
+          {case_arms, default_value, d4} =
+            Enum.reduce(Enum.with_index(clauses), {[], nil, d3}, fn {clause, index},
+                                                                    {arms, default_val, acc_d} ->
+              %{pattern: pattern, body: body} = clause
+              resolved_body = resolve_captures(body, case_val)
 
-            # Each clause body starts from mat_val as its baseline — this is
-            # Elixir scoping semantics: outer assignments are visible in clauses
-            # that don't reassign the signal.
-            {body_value, body_d} = build_mux_from_statements(
-              resolved_body, target_name, signal_map, instance_map, memory_map, acc_d, comb, mat_val
-            )
+              # Each clause body starts from mat_val as its baseline — this is
+              # Elixir scoping semantics: outer assignments are visible in clauses
+              # that don't reassign the signal.
+              {body_value, body_d} =
+                build_mux_from_statements(
+                  resolved_body,
+                  target_name,
+                  signal_map,
+                  instance_map,
+                  memory_map,
+                  acc_d,
+                  comb,
+                  mat_val
+                )
 
-            case pattern do
-              :default ->
-                {arms, body_value, body_d}
-
-              # An all-wildcard/capture binary pattern (`<<_::8, _::8>>`,
-              # `<<x::8, _::8>>`, `<<_::16>>`) matches EVERY subject. As the
-              # LAST clause that is exactly the default, so route it to
-              # `default_val` — one fewer always-true comparison in the emitted
-              # mux, and the casez form gets a real `default:` arm.
-              #
-              # A catch-all in any EARLIER position is an ordinary arm. Under
-              # first-match-wins it shadows everything below it, which is what
-              # Elixir `case` means and what the arm order says. It used to be
-              # rerouted here too, which quietly inverted the author's priority:
-              # the specific arms below won instead. (Rerouting was a workaround
-              # for a last-match-wins Verilog lowering; see emit_mux_always.)
-              {:binary_pattern, segments, total_width} ->
-                if all_wildcard_pattern?(segments) and index == last_index and default_val == nil do
+              case pattern do
+                :default ->
                   {arms, body_value, body_d}
-                else
-                  {match_sig, match_d} = build_binary_match(case_val, segments, total_width, body_d)
-                  pat = segments_to_pattern(segments, total_width)
-                  {arms ++ [{match_sig, body_value, pat}], default_val, match_d}
-                end
 
-              _ ->
-                {pattern_value, pattern_d} = Expr.build_expr(pattern, signal_map, instance_map, memory_map, body_d)
-                # Static casez pattern only when the arm label is a concrete
-                # constant (full-care mask); otherwise :dynamic disables casez.
-                pat =
-                  case pattern_value do
-                    %Const{value: v, width: w} -> {v, mask(w), w}
-                    _ -> :dynamic
+                # An all-wildcard/capture binary pattern (`<<_::8, _::8>>`,
+                # `<<x::8, _::8>>`, `<<_::16>>`) matches EVERY subject. As the
+                # LAST clause that is exactly the default, so route it to
+                # `default_val` — one fewer always-true comparison in the emitted
+                # mux, and the casez form gets a real `default:` arm.
+                #
+                # A catch-all in any EARLIER position is an ordinary arm. Under
+                # first-match-wins it shadows everything below it, which is what
+                # Elixir `case` means and what the arm order says. It used to be
+                # rerouted here too, which quietly inverted the author's priority:
+                # the specific arms below won instead. (Rerouting was a workaround
+                # for a last-match-wins Verilog lowering; see emit_mux_always.)
+                {:binary_pattern, segments, total_width} ->
+                  if all_wildcard_pattern?(segments) and index == last_index and
+                       default_val == nil do
+                    {arms, body_value, body_d}
+                  else
+                    {match_sig, match_d} =
+                      build_binary_match(case_val, segments, total_width, body_d)
+
+                    pat = segments_to_pattern(segments, total_width)
+                    {arms ++ [{match_sig, body_value, pat}], default_val, match_d}
                   end
-                {arms ++ [{pattern_value, body_value, pat}], default_val, pattern_d}
-            end
-          end)
 
-          case_arms = Enum.filter(case_arms, fn {_, v, _} -> v != nil end)
+                _ ->
+                  {pattern_value, pattern_d} =
+                    Expr.build_expr(pattern, signal_map, instance_map, memory_map, body_d)
+
+                  # Static casez pattern only when the arm label is a concrete
+                  # constant (full-care mask); otherwise :dynamic disables casez.
+                  pat =
+                    case pattern_value do
+                      %Const{value: v, width: w} -> {v, mask(w), w}
+                      _ -> :dynamic
+                    end
+
+                  {arms ++ [{pattern_value, body_value, pat}], default_val, pattern_d}
+              end
+            end)
+
+          # An arm that does not assign this signal keeps the value in effect
+          # (`hv` below). Dropping it is the same only when the default is
+          # that value too; when a catch-all assigns the signal, a dropped arm
+          # would fall into the catch-all instead (`case s do 0 -> y = 1;
+          # _ -> z = 2 end` gave z = 2 at s = 0). So keep such arms.
+          case_arms =
+            if default_value == nil,
+              do: Enum.filter(case_arms, fn {_, v, _} -> v != nil end),
+              else: case_arms
 
           if case_arms == [] and default_value == nil do
             {current_value, d4}
           else
             {hv, d5} = if mat_val != nil, do: {fix_const.(mat_val), d4}, else: hold.(d4)
             default_val = fix_const.(default_value || hv)
-            case_arms   = Enum.map(case_arms, fn {cond, val, pat} -> {cond, fix_const.(val || hv), pat} end)
+
+            case_arms =
+              Enum.map(case_arms, fn {cond, val, pat} -> {cond, fix_const.(val || hv), pat} end)
+
             {case_mux_result, d6} = build_case_mux(case_val, case_arms, default_val, d5)
             {case_mux_result, d6}
           end
@@ -283,10 +425,11 @@ defmodule Hw.Compile.Elaborate.Sequential do
 
     if count > 1 do
       raise Hw.Compile.Elaborate.ElabError,
-        message: "hdl_case has more than one catch-all/wildcard arm " <>
-                 "(a second `<<_::N>>`-style pattern, or a wildcard alongside a " <>
-                 "default). Only the first can ever match; the rest are dead " <>
-                 "code. Remove the extra catch-all arm.",
+        message:
+          "hdl_case has more than one catch-all/wildcard arm " <>
+            "(a second `<<_::N>>`-style pattern, or a wildcard alongside a " <>
+            "default). Only the first can ever match; the rest are dead " <>
+            "code. Remove the extra catch-all arm.",
         context: clauses
     end
 
@@ -325,13 +468,13 @@ defmodule Hw.Compile.Elaborate.Sequential do
                   raise Hw.Compile.Elaborate.ElabError,
                     message:
                       "hdl_case has two arms that both match the exact value " <>
-                      "#{value} (0x#{Integer.to_string(value, 16)}). Case arms are " <>
-                      "priority-ordered last-wins, so the second arm silently " <>
-                      "shadows the first and the first arm's body becomes dead " <>
-                      "code. This is the duplicate-index / duplicate-label failure " <>
-                      "mode (e.g. a char_at ROM template or telemetry frame that " <>
-                      "emits two fields under one index). Give each selector a " <>
-                      "distinct value, or fold the two bodies into one arm.",
+                        "#{value} (0x#{Integer.to_string(value, 16)}). Case arms are " <>
+                        "priority-ordered last-wins, so the second arm silently " <>
+                        "shadows the first and the first arm's body becomes dead " <>
+                        "code. This is the duplicate-index / duplicate-label failure " <>
+                        "mode (e.g. a char_at ROM template or telemetry frame that " <>
+                        "emits two fields under one index). Give each selector a " <>
+                        "distinct value, or fold the two bodies into one arm.",
                     context: segments
               end
 
@@ -388,7 +531,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
         case seg do
           %{type: :literal, value: v} ->
             m = mask(w)
-            {value ||| ((v &&& m) <<< lo), care ||| (m <<< lo)}
+            {value ||| (v &&& m) <<< lo, care ||| m <<< lo}
 
           _ ->
             {value, care}
@@ -406,39 +549,50 @@ defmodule Hw.Compile.Elaborate.Sequential do
   defp resolve_captures_in_stmt(%{type: :assign, target: _t, value: v} = stmt, subj) do
     %{stmt | value: resolve_captures_in_expr(v, subj)}
   end
+
   defp resolve_captures_in_stmt(%{type: :if} = stmt, subj) do
-    %{stmt |
-      condition: resolve_captures_in_expr(stmt.condition, subj),
-      then_body: resolve_captures(stmt.then_body, subj),
-      else_body: stmt.else_body && resolve_captures(stmt.else_body, subj)
+    %{
+      stmt
+      | condition: resolve_captures_in_expr(stmt.condition, subj),
+        then_body: resolve_captures(stmt.then_body, subj),
+        else_body: stmt.else_body && resolve_captures(stmt.else_body, subj)
     }
   end
+
   defp resolve_captures_in_stmt(%{type: :case, clauses: clauses} = stmt, subj) do
-    resolved_clauses = Enum.map(clauses, fn clause ->
-      %{clause | body: resolve_captures(clause.body, subj)}
-    end)
+    resolved_clauses =
+      Enum.map(clauses, fn clause ->
+        %{clause | body: resolve_captures(clause.body, subj)}
+      end)
+
     %{stmt | clauses: resolved_clauses}
   end
+
   defp resolve_captures_in_stmt(other, _subj), do: other
 
   defp resolve_captures_in_expr({:slice, {:signal, :__subject__}, hi, lo}, subj) do
     {:slice, subj, {:const, hi}, {:const, lo}}
   end
+
   defp resolve_captures_in_expr({:slice, inner, hi, lo}, subj) do
     {:slice, resolve_captures_in_expr(inner, subj), hi, lo}
   end
+
   # 1-arg operators: bnot, unary minus, etc.
   defp resolve_captures_in_expr({op, a}, subj) when is_tuple(a) do
     {op, resolve_captures_in_expr(a, subj)}
   end
+
   # 2-arg operators
   defp resolve_captures_in_expr({op, a, b}, subj) when is_tuple(a) or is_tuple(b) do
     {op, resolve_captures_in_expr(a, subj), resolve_captures_in_expr(b, subj)}
   end
+
   # Lists (e.g. concat elements)
   defp resolve_captures_in_expr({:concat, elems}, subj) do
     {:concat, Enum.map(elems, &resolve_captures_in_expr(&1, subj))}
   end
+
   defp resolve_captures_in_expr(other, _subj), do: other
 
   # Build a 1-bit "match" signal for a binary pattern against the subject.
@@ -450,22 +604,29 @@ defmodule Hw.Compile.Elaborate.Sequential do
   # This is semantically correct and synthesizes identically to casez.
   defp build_binary_match(subject_sig, segments, total_width, design) do
     # Compute bit ranges for each segment (MSB-first)
-    {segments_with_ranges, _} = Enum.map_reduce(segments, total_width - 1, fn seg, hi ->
-      width = case seg.width do
-        :rest -> hi + 1   # rest = all remaining bits
-        w -> w
-      end
-      lo = hi - width + 1
-      {{seg, hi, lo}, lo - 1}
-    end)
+    {segments_with_ranges, _} =
+      Enum.map_reduce(segments, total_width - 1, fn seg, hi ->
+        width =
+          case seg.width do
+            # rest = all remaining bits
+            :rest -> hi + 1
+            w -> w
+          end
+
+        lo = hi - width + 1
+        {{seg, hi, lo}, lo - 1}
+      end)
 
     # Build equality checks for literal segments only
-    check_exprs = Enum.flat_map(segments_with_ranges, fn
-      {%{type: :literal, value: val, width: w}, hi, lo} ->
-        [{:slice_eq, subject_sig, hi, lo, val, w}]
-      _ ->
-        []   # wildcard and capture: don't-care, skip
-    end)
+    check_exprs =
+      Enum.flat_map(segments_with_ranges, fn
+        {%{type: :literal, value: val, width: w}, hi, lo} ->
+          [{:slice_eq, subject_sig, hi, lo, val, w}]
+
+        _ ->
+          # wildcard and capture: don't-care, skip
+          []
+      end)
 
     case check_exprs do
       [] ->
@@ -479,14 +640,29 @@ defmodule Hw.Compile.Elaborate.Sequential do
 
       checks ->
         # Build AND-chain of slice equality checks
-        Enum.reduce(checks, {nil, design}, fn {:slice_eq, subj, hi, lo, val, w}, {acc_sig, acc_d} ->
+        Enum.reduce(checks, {nil, design}, fn {:slice_eq, subj, hi, lo, val, w},
+                                              {acc_sig, acc_d} ->
           # Extract slice
           slice_name = :"_bpslice_#{Hw.Compile.Elaborate.Gensym.next()}"
-          slice_sig = %Signal{name: slice_name, width: hi - lo + 1, signed: :unsigned, direction: :internal}
+
+          slice_sig = %Signal{
+            name: slice_name,
+            width: hi - lo + 1,
+            signed: :unsigned,
+            direction: :internal
+          }
+
           hi_const = %Const{value: hi, width: 32, signed: :unsigned}
           lo_const = %Const{value: lo, width: 32, signed: :unsigned}
           acc_d1 = Design.add_signal(acc_d, slice_sig)
-          acc_d2 = Design.add_op(acc_d1, %Ops.Slice{output: slice_sig, input: subj, hi: hi_const, lo: lo_const})
+
+          acc_d2 =
+            Design.add_op(acc_d1, %Ops.Slice{
+              output: slice_sig,
+              input: subj,
+              hi: hi_const,
+              lo: lo_const
+            })
 
           # Equality check
           val_const = %Const{value: val, width: w, signed: :unsigned}
@@ -499,6 +675,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
           case acc_sig do
             nil ->
               {eq_sig, acc_d4}
+
             prev ->
               and_name = :"_bpand_#{Hw.Compile.Elaborate.Gensym.next()}"
               and_sig = %Signal{name: and_name, width: 1, signed: :unsigned, direction: :internal}
@@ -520,7 +697,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
 
     result_sig = %Signal{name: result_name, width: width, signed: signed, direction: :internal}
 
-    {then_val, d0}  = extend_arm(then_val, width, signed, design)
+    {then_val, d0} = extend_arm(then_val, width, signed, design)
     {else_val, d0b} = extend_arm(else_val, width, signed, d0)
 
     d1 = Design.add_signal(d0b, result_sig)
@@ -530,6 +707,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
       cases: [{condition, then_val}],
       default: else_val
     }
+
     d2 = Design.add_op(d1, mux_op)
 
     {result_sig, d2}
@@ -541,11 +719,13 @@ defmodule Hw.Compile.Elaborate.Sequential do
     # `0x30 + state` (6-bit) alongside `0x50` (8-bit)) truncated the wide arms
     # and emitted legal-but-wrong Verilog. Take the max width across all arms;
     # narrower arms are zero-extended to it in build_case_mux/build_mux_op.
-    widths = Enum.map(vals, fn
-      %Signal{width: w} -> w
-      %Const{width: w}  -> w
-      _                 -> 1
-    end)
+    widths =
+      Enum.map(vals, fn
+        %Signal{width: w} -> w
+        %Const{width: w} -> w
+        _ -> 1
+      end)
+
     width = Enum.max(widths)
 
     # Signed only if EVERY sized arm is signed (mixing is caught elsewhere); a
@@ -553,8 +733,8 @@ defmodule Hw.Compile.Elaborate.Sequential do
     signed =
       if Enum.all?(vals, fn
            %Signal{signed: :signed} -> true
-           %Const{signed: :signed}  -> true
-           _                        -> false
+           %Const{signed: :signed} -> true
+           _ -> false
          end),
          do: :signed,
          else: :unsigned
@@ -570,6 +750,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
   defp extend_arm(%Const{} = c, width, signed, design) do
     {%Const{c | width: width, signed: signed}, design}
   end
+
   defp extend_arm(%Signal{width: w} = s, width, _signed, design) when w < width do
     name = :"_zext_arm_#{Hw.Compile.Elaborate.Gensym.next()}"
     sig = %Signal{name: name, width: width, signed: :unsigned, direction: :internal}
@@ -577,6 +758,7 @@ defmodule Hw.Compile.Elaborate.Sequential do
     d2 = Design.add_op(d1, %Ops.ZeroExtend{output: sig, input: s, width: width})
     {sig, d2}
   end
+
   defp extend_arm(val, _width, _signed, design), do: {val, design}
 
   defp build_case_mux(case_expr, case_arms, default_val, design) do
@@ -590,24 +772,29 @@ defmodule Hw.Compile.Elaborate.Sequential do
     # case_arms entries are already condition signals (either equality or binary match)
     # Binary pattern arms already have pre-built 1-bit match signals
     # Plain equality arms still need comparison signals built
-    {cases, d1} = Enum.reduce(case_arms, {[], design}, fn {pattern_or_cond, value, _pat}, {acc_cases, acc_d} ->
-      # If the pattern is already a 1-bit Signal (from binary pattern matching),
-      # use it directly as the condition. Otherwise build equality comparison.
-      cond_sig = case pattern_or_cond do
-        %Signal{width: 1} = sig -> {sig, acc_d}
-        other ->
-          cmp_name = :"_eq_#{Hw.Compile.Elaborate.Gensym.next()}"
-          cmp_sig = %Signal{name: cmp_name, width: 1, signed: :unsigned, direction: :internal}
-          acc_d2 = Design.add_signal(acc_d, cmp_sig)
-          eq_op = %Ops.Eq{output: cmp_sig, a: case_expr, b: other}
-          acc_d3 = Design.add_op(acc_d2, eq_op)
-          {cmp_sig, acc_d3}
-      end
+    {cases, d1} =
+      Enum.reduce(case_arms, {[], design}, fn {pattern_or_cond, value, _pat},
+                                              {acc_cases, acc_d} ->
+        # If the pattern is already a 1-bit Signal (from binary pattern matching),
+        # use it directly as the condition. Otherwise build equality comparison.
+        cond_sig =
+          case pattern_or_cond do
+            %Signal{width: 1} = sig ->
+              {sig, acc_d}
 
-      {cond_sig_val, updated_d} = cond_sig
-      {matched_value, updated_d2} = extend_arm(value, width, signed, updated_d)
-      {acc_cases ++ [{cond_sig_val, matched_value}], updated_d2}
-    end)
+            other ->
+              cmp_name = :"_eq_#{Hw.Compile.Elaborate.Gensym.next()}"
+              cmp_sig = %Signal{name: cmp_name, width: 1, signed: :unsigned, direction: :internal}
+              acc_d2 = Design.add_signal(acc_d, cmp_sig)
+              eq_op = %Ops.Eq{output: cmp_sig, a: case_expr, b: other}
+              acc_d3 = Design.add_op(acc_d2, eq_op)
+              {cmp_sig, acc_d3}
+          end
+
+        {cond_sig_val, updated_d} = cond_sig
+        {matched_value, updated_d2} = extend_arm(value, width, signed, updated_d)
+        {acc_cases ++ [{cond_sig_val, matched_value}], updated_d2}
+      end)
 
     {matched_default, d1b} = extend_arm(default_val, width, signed, d1)
     d2 = Design.add_signal(d1b, result_sig)
@@ -654,13 +841,15 @@ defmodule Hw.Compile.Elaborate.Sequential do
   def extract_reset(statements, target_name, signal_map, const_wire_map \\ %{}) do
     case statements do
       [%{type: :if, condition: {:signal, rst_name}, then_body: then_body} | _]
-        when rst_name in [:rst, :reset] ->
+      when rst_name in [:rst, :reset] ->
         case find_const_assignment(then_body, target_name, const_wire_map) do
           {:ok, const_value} ->
             {build_const(const_value, signal_map, target_name), nil}
+
           :not_found ->
             {nil, nil}
         end
+
       _ ->
         {nil, nil}
     end
@@ -670,11 +859,13 @@ defmodule Hw.Compile.Elaborate.Sequential do
     Enum.find_value(statements, :not_found, fn
       %{type: :assign, target: ^target_name, value: {:const, n}} ->
         {:ok, n}
+
       %{type: :assign, target: ^target_name, value: {:signal, sig_name}} ->
         case Map.get(const_wire_map, sig_name) do
           nil -> nil
-          n   -> {:ok, n}
+          n -> {:ok, n}
         end
+
       _ ->
         nil
     end)
