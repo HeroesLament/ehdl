@@ -78,17 +78,104 @@ defmodule Hw.Compile.Elaborate.Sequential do
     {then_sigs ++ else_sigs, then_mems ++ else_mems}
   end
 
-  defp find_assigned_in_statement(%{type: :case, clauses: clauses}, enable_cond) do
-    {sigs, mems} =
-      Enum.reduce(clauses, {[], []}, fn %{body: body}, {acc_s, acc_m} ->
-        {s, m} = find_all_assigned(body, enable_cond)
-        {acc_s ++ s, acc_m ++ m}
+  # A memory write in a case arm is enabled by the arm being the first
+  # match: its own pattern hits and no earlier one did (first-match-wins, as
+  # the mux lowering). Before, every arm inherited only the enclosing
+  # enable, so a write in one arm fired on any subject value. A binary
+  # pattern hits when every literal segment equals its slice of the
+  # subject (`clause_hit`, the same bit ranges as `build_binary_match`).
+  # Only a case with no subject expression is refused.
+  defp find_assigned_in_statement(%{type: :case, clauses: clauses} = stmt, enable_cond) do
+    subject = Map.get(stmt, :expr)
+
+    {sigs, mems, _taken} =
+      Enum.reduce(clauses, {[], [], {:const, 0}}, fn %{pattern: pattern, body: body},
+                                                    {acc_s, acc_m, taken} ->
+        hit = clause_hit(subject, pattern)
+
+        arm_enable =
+          case {hit, taken} do
+            {:unknown, _} -> :unknown
+            {_, :unknown} -> :unknown
+            _ -> {:land, enable_cond, {:land, {:lnot, taken}, hit}}
+          end
+
+        {s, m} =
+          case arm_enable do
+            :unknown ->
+              {s, m} = find_all_assigned(body, enable_cond)
+
+              if m != [] do
+                raise Hw.Compile.Elaborate.ElabError,
+                  message:
+                      "memory write #{inspect(elem(hd(m), 0))} in a case arm at or after a binary " <>
+                        "pattern: its enable cannot be derived; write it under an `if`"
+              end
+
+              {s, m}
+
+            en ->
+              find_all_assigned(body, en)
+          end
+
+        next_taken =
+          case {hit, taken} do
+            {:unknown, _} -> :unknown
+            {_, :unknown} -> :unknown
+            _ -> {:lor, taken, hit}
+          end
+
+        {acc_s ++ s, acc_m ++ m, next_taken}
       end)
 
     {sigs, mems}
   end
 
   defp find_assigned_in_statement(_, _enable_cond), do: {[], []}
+
+  # A case arm's match as an expression: `:default` always, a value pattern
+  # by equality, a binary pattern by its literal segments, each against its
+  # slice of the subject (wildcards and captures match anything). A case
+  # without a subject: `:unknown`.
+  defp clause_hit(_subject, :default), do: {:const, 1}
+  defp clause_hit(nil, _pattern), do: :unknown
+
+  defp clause_hit(subject, {:binary_pattern, segments, total_width}) do
+    segments
+    |> segment_ranges(total_width)
+    |> Enum.flat_map(fn
+      {%{type: :literal, value: v}, hi, lo} ->
+        [{:eq, {:slice, subject, {:const, hi}, {:const, lo}}, {:const, v &&& mask(hi - lo + 1)}}]
+
+      _ ->
+        []
+    end)
+    |> case do
+      [] -> {:const, 1}
+      [first | rest] -> Enum.reduce(rest, first, fn eq, acc -> {:land, acc, eq} end)
+    end
+  end
+
+  defp clause_hit(subject, pattern), do: {:eq, subject, pattern}
+
+  # Each segment of a binary pattern with its bit range (hi, lo) in the
+  # subject, MSB first; `:rest` takes what is left. The walk of
+  # `segments_to_pattern` and `build_binary_match`.
+  defp segment_ranges(segments, total_width) do
+    {ranged, _} =
+      Enum.map_reduce(segments, total_width - 1, fn seg, hi ->
+        width =
+          case seg.width do
+            :rest -> hi + 1
+            w -> w
+          end
+
+        lo = hi - width + 1
+        {{seg, hi, lo}, lo - 1}
+      end)
+
+    ranged
+  end
 
   # Whether `statements` (nil for an absent else) assign `target` anywhere.
   defp assigns?(nil, _target), do: false
