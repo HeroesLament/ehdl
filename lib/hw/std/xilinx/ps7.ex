@@ -1,4 +1,4 @@
-defmodule Hw.PS7 do
+defmodule Hw.Xilinx.PS7 do
   @moduledoc """
   Zynq-7000 Processing System hard macro (`PS7`).
 

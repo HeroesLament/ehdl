@@ -8,7 +8,7 @@ defmodule Hw.AXIHPWriter do
   `DmaBuf` in nervezynq) and polls `write_ptr`. There is deliberately no
   dependency on `M_AXI_GP0` anywhere in this component: on the current
   LibreSDR firmware the GP path is dead (see nervezynq/HANDOFF.md), and
-  this module plus EMIO GPIO (`Hw.PS7HP`) is the architecture that routes
+  this module plus EMIO GPIO (`Hw.Xilinx.PS7HP`) is the architecture that routes
   around it. HP is the PL *mastering* into the PS — the failure mode that
   hangs the CPU (a PS-initiated read into the PL that never answers)
   cannot occur on this path; a broken PL master starves, it cannot wedge
@@ -66,7 +66,7 @@ defmodule Hw.AXIHPWriter do
   beyond the radio's need: at 100 MHz, a pessimistic 50% bus efficiency is
   ~200 MB/s against ~128 MB/s for 16 Msps of 64-bit-packed I/Q.
   Single-outstanding also keeps the first silicon session legible: the
-  PS7's WACOUNT/WCOUNT (exposed by `Hw.PS7HP`) cross-check against
+  PS7's WACOUNT/WCOUNT (exposed by `Hw.Xilinx.PS7HP`) cross-check against
   `bursts` directly — the same triage shape the devcfg DMA queue flags
   gave the readback instrument.
 
@@ -84,7 +84,7 @@ defmodule Hw.AXIHPWriter do
   ## Status outputs are for EMIO, not AXI
 
   `write_ptr`, `bursts`, `bresp_errs` exist so a GP-less design can watch
-  the engine: route a selection of bits to `Hw.PS7HP.emio_gpio_i` and read
+  the engine: route a selection of bits to `Hw.Xilinx.PS7HP.emio_gpio_i` and read
   them from Linux GPIO. Overrun accounting (samples dropped because the
   FIFO was full) belongs to the FIFO side of the split, next to the
   storage it describes.

@@ -1,4 +1,4 @@
-defmodule Hw.PS7AXI do
+defmodule Hw.Xilinx.PS7AXI do
   @moduledoc """
   Zynq-7000 PS7 with every AXI port the PL can reach as a full port list:
   M_AXI_GP0 (the control plane) and the PS slave ports S_AXI_GP0/1,
@@ -7,7 +7,7 @@ defmodule Hw.PS7AXI do
   fabfarm axi_observatory work; widths are the PS7 primitive's own.
 
   Every input is bound: a design that does not drive a port must tie it
-  (an undriven VALID into the PS is the hazard `Hw.PS7` warns about).
+  (an undriven VALID into the PS is the hazard `Hw.Xilinx.PS7` warns about).
   """
 
   use Hw.Component

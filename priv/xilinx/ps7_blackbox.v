@@ -12,7 +12,7 @@
 // reports "2 cells" — one BUFG, one PS7 — and every register you wrote is
 // gone.
 //
-// Only the ports used by Hw.PS7 are declared. Undeclared ports on a blackbox
+// Only the ports used by Hw.Xilinx.PS7 are declared. Undeclared ports on a blackbox
 // are fine; nextpnr-xilinx ties unused PS7 inputs to constants during
 // placement. Widths and directions are per UG585, viewed from the PL: a port
 // the PS drives is an `output` here.

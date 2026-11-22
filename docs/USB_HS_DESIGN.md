@@ -55,7 +55,7 @@ Hw.USB.ClockTrim   254 lines — the PHY sources the clock; ±2500 ppm stops exi
 
 `SIE2` rather than modifying `SIE` in place: full speed stays a working,
 shipped configuration, and a design opts into one or the other. Same reasoning
-`Hw.PS7HP` records for not adding ports to `Hw.PS7` — a new port is a new
+`Hw.Xilinx.PS7HP` records for not adding ports to `Hw.Xilinx.PS7` — a new port is a new
 undriven wire in every existing instance.
 
 

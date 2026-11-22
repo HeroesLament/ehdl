@@ -2,8 +2,10 @@ defmodule ULX3S.PLL do
   @moduledoc """
   ECP5 PLL for ULX3S: 25 MHz oscillator -> two configurable output clocks.
 
-  Wraps EHXPLLL + two DCCAs. Both outputs are buffered onto the ECP5 global
-  clock network.
+  A board-level configuration of `Hw.ECP5.EHXPLLL`: fixes the reference
+  dividers for the 25 MHz oscillator, closes the CLKOP feedback, and ties the
+  ports the board does not use. The outputs are not buffered here; nextpnr
+  promotes them onto the global clock network (DCCA) itself.
 
   ## ECP5 Clock Architecture
 
@@ -27,6 +29,10 @@ defmodule ULX3S.PLL do
 
   Previous coefficients (CLKI_DIV=8, CLKFB_DIV=15) produced 46.875 MHz —
   24,000 ppm error, far outside USB spec.
+
+  CLKI_DIV=25 runs the phase detector at 1 MHz, below the datasheet's
+  10..400 MHz. See `Hw.ECP5.EHXPLLL`: the output frequency is right, but
+  `locked` may not be trustworthy at this f_pfd.
 
   ## Dynamic Phase Control
 
@@ -78,49 +84,37 @@ defmodule ULX3S.PLL do
   input  :phase_dir,  1
   input  :phase_step, 1
 
-  blackbox :pll, "EHXPLLL",
-    attrs: [
-      ICP_CURRENT:            "12",
-      LPF_RESISTOR:           "8",
-      MFG_ENABLE_FILTEROPAMP: "1",
-      MFG_GMCREF_SEL:         "2"
-    ],
-    params: [
-      PLLRST_ENA:      "DISABLED",
-      INTFB_WAKE:      "DISABLED",
-      STDBY_ENABLE:    "DISABLED",
-      DPHASE_SOURCE:   "ENABLED",   # enable dynamic phase control
-      OUTDIVIDER_MUXA: "DIVA",
-      OUTDIVIDER_MUXB: "DIVB",
-      OUTDIVIDER_MUXC: "DIVC",
-      OUTDIVIDER_MUXD: "DIVD",
-      CLKOP_ENABLE:    "ENABLED",
-      CLKOS_ENABLE:    "ENABLED",
-      CLKOP_DIV:       :CLKOP_DIV,
-      CLKOP_CPHASE:    :CLKOP_CPHASE,
-      CLKOP_FPHASE:    0,
-      CLKOS_DIV:       :CLKOS_DIV,
-      CLKOS_CPHASE:    :CLKOS_CPHASE,
-      CLKOS_FPHASE:    0,
-      CLKFB_DIV:       48,          # exact 48 MHz: 25 × 48/25 = 48.000
-      CLKI_DIV:        25,          # exact 48 MHz
-      FEEDBK_PATH:     "CLKOP"
-    ],
-    ports: [
-      CLKI:         :clk_in,
-      CLKOP:        :clk_out0,
-      CLKOS:        :clk_out1,
-      LOCK:         :locked,
-      CLKFB:        :clk_out0,
-      PHASESEL0:    0,
-      PHASESEL1:    0,
-      PHASEDIR:     :phase_dir,
-      PHASESTEP:    :phase_step,
-      PHASELOADREG: 0,
-      STDBY:        0,
-      RST:          0,
-      PLLWAKESYNC:  0,
-      ENCLKOP:      0,
-      ENCLKOS:      0
-    ]
+  wire :zero, 1
+
+  comb do
+    zero = 0
+  end
+
+  instance :pll, Hw.ECP5.EHXPLLL,
+    CLKI_DIV:      25,          # exact 48 MHz: 25 × 48/25 = 48.000
+    CLKFB_DIV:     48,
+    FEEDBK_PATH:   "CLKOP",
+    CLKOP_DIV:     CLKOP_DIV,       # forwarded from this module's params
+    CLKOP_CPHASE:  CLKOP_CPHASE,
+    CLKOS_DIV:     CLKOS_DIV,
+    CLKOS_CPHASE:  CLKOS_CPHASE,
+    CLKOS_ENABLE:  "ENABLED",
+    DPHASE_SOURCE: "ENABLED",   # enable dynamic phase control
+    clki:          :clk_in,
+    clkfb:         :clk_out0,
+    clkop:         :clk_out0,
+    clkos:         :clk_out1,
+    lock:          :locked,
+    phasedir:      :phase_dir,
+    phasestep:     :phase_step,
+    phasesel0:     :zero,
+    phasesel1:     :zero,
+    phaseloadreg:  :zero,
+    stdby:         :zero,
+    pllwakesync:   :zero,
+    rst:           :zero,
+    enclkop:       :zero,
+    enclkos:       :zero,
+    enclkos2:      :zero,
+    enclkos3:      :zero
 end

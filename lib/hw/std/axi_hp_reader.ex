@@ -91,7 +91,7 @@ defmodule Hw.AXIHPReader do
   `ring_size - ((head - read_ptr) mod ring_size) - BURST_LEN * 8`.
   `bursts`, `rresp_errs`, `rlast_errs` are triage counters.
 
-  Nothing here has been on silicon. `Hw.PS7HP` does not expose an HP read
+  Nothing here has been on silicon. `Hw.Xilinx.PS7HP` does not expose an HP read
   channel yet; this component is tested against an ideal slave only.
   """
 

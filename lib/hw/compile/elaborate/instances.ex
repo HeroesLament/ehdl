@@ -207,11 +207,15 @@ defmodule Hw.Compile.Elaborate.Instances do
             {port_name, other}
         end
       end
-      # Resolve any param references in blackbox params.
+      # Resolve any param references in blackbox params and attrs.
       # Values may be: integers (pass through), strings (pass through),
       # atoms that name a param (look up in child_param_map),
       # or %Param{} structs (extract .value).
-      resolved_params = Enum.map(bb.params, fn {k, v} ->
+      #
+      # Attrs take the same references as params so a primitive wrapper can
+      # expose a synthesis attribute as a `param` (Hw.ECP5.EHXPLLL's loop-filter
+      # settings are attributes, not parameters, on the yosys/nextpnr side).
+      resolve_value = fn {k, v} ->
         resolved = case v do
           %{__struct__: Hw.IR.Types.Param, value: val} when not is_nil(val) ->
             val
@@ -261,14 +265,17 @@ defmodule Hw.Compile.Elaborate.Instances do
         end
 
         {k, resolved}
-      end)
+      end
+
+      resolved_params = Enum.map(bb.params, resolve_value)
+      resolved_attrs = Enum.map(Map.get(bb, :attrs, []), resolve_value)
 
       blackbox_op = %Hw.IR.Ops.Blackbox{
         name: :"#{inst_name}_#{bb.name}",
         module: bb.module,
         params: resolved_params,
         ports: ports,
-        attrs: Map.get(bb, :attrs, [])
+        attrs: resolved_attrs
       }
       Hw.IR.Design.add_op(d, blackbox_op)
     end)

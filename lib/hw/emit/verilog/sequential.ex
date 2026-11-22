@@ -248,7 +248,14 @@ defmodule Hw.Emit.Verilog.Sequential do
       [] -> ""
       _ ->
         attrs
-        |> Enum.map(fn {k, v} -> "(* #{k}=\"#{v}\" *)" end)
+        |> Enum.map(fn {k, v} ->
+          # A component elaborated as the top resolves its own param refs
+          # here rather than in Elaborate.Instances; attrs follow params.
+          v = if is_atom(v) and not is_boolean(v) and not is_nil(v),
+            do: Map.get(param_map, v, v),
+            else: v
+          "(* #{k}=\"#{v}\" *)"
+        end)
         |> Enum.join(" ")
         |> then(fn s -> "  #{s}\n" end)
     end
@@ -298,19 +305,15 @@ defmodule Hw.Emit.Verilog.Sequential do
   end
 
   defp emit_tristate(%Tristate{io: io, output_value: out_val, output_enable: en, input_value: in_val}) do
-    # Emit ECP5 BB (bidirectional buffer) primitive.
-    # BB has separate I (drive to pad), T (tristate, active HIGH = Z),
-    # B (the actual pad), and O (read from pad) ports.
-    # This gives proper electrical separation between the drive path and
-    # the read-back path — plain assign loops don't work on real silicon.
-    inst_name = "#{io.name}_bb"
-    [
-      "  BB #{inst_name} (",
-      "    .I(#{VerilogOps.emit_value(out_val)}),",
-      "    .T(~#{VerilogOps.emit_value(en)}),",
-      "    .B(#{io.name}),",
-      "    .O(#{in_val.name})",
-      "  );"
-    ]
+    # The pad buffer is Hw.ECP5.BB; see its moduledoc for why a `tristate`
+    # becomes a primitive rather than an assign. ECP5 only: this path has no
+    # target selection, so an xc7 design wants an explicit Hw.Xilinx.IOBUF.
+    Hw.ECP5.BB.verilog_lines(
+      "#{io.name}_bb",
+      VerilogOps.emit_value(out_val),
+      "~#{VerilogOps.emit_value(en)}",
+      to_string(io.name),
+      to_string(in_val.name)
+    )
   end
 end

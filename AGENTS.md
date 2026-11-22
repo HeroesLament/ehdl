@@ -461,7 +461,7 @@ issuing the access prevents it.
 retire — the symptom is a hang with the bitstream loaded, clock running, level
 shifters up and everything else looking healthy. `AWID`/`ARID` must be captured
 and echoed on `BID`/`RID`. `AWSIZE`/`ARSIZE` are 2 bits on Zynq GP ports;
-`Hw.PS7` still declares them as 3 (known, unfixed).
+`Hw.Xilinx.PS7` still declares them as 3 (known, unfixed).
 
 `FCLK_CLK0` is programmed by `ps7_init`, **not by the bitstream**. A design can
 be correctly loaded and appear completely dead if the clock gate is shut
@@ -644,7 +644,7 @@ approach in `_fuzz/` is the vendor-free alternative and is built and validated
 
 ## Known-unfixed
 
-- `Hw.PS7` declares `maxigp0_awsize`/`arsize` as 3 bits; should be 2.
+- `Hw.Xilinx.PS7` declares `maxigp0_awsize`/`arsize` as 3 bits; should be 2.
 - `priv/xilinx/ps7_blackbox.v` is redundant; yosys ships PS7 in `cells_xtra.v`.
 - `Hw.Sim.Eval` and `Hw.Sim.Compiler` disagree on `ReverseBits` and `Popcount` —
   the interpreter is correct, the compiler approximates.

@@ -1,14 +1,14 @@
-defmodule Hw.PS7HP do
+defmodule Hw.Xilinx.PS7HP do
   @moduledoc """
   Zynq-7000 PS7 with the high-bandwidth PL-to-PS paths: `S_AXI_HP0` (write
-  side) and the EMIO GPIO banks, alongside everything `Hw.PS7` already
+  side) and the EMIO GPIO banks, alongside everything `Hw.Xilinx.PS7` already
   exposes (fabric clocks/resets and `M_AXI_GP0`).
 
-  A separate component rather than new ports on `Hw.PS7`, deliberately:
-  `Hw.PS7` is instantiated by every live libresdr design, and a new input
+  A separate component rather than new ports on `Hw.Xilinx.PS7`, deliberately:
+  `Hw.Xilinx.PS7` is instantiated by every live libresdr design, and a new input
   port on a component is a new undriven wire in every existing instance.
   Undriven VALIDs into the PS are exactly the kind of silent hazard this
-  project keeps paying for. Nothing changes for `Hw.PS7` users; a design
+  project keeps paying for. Nothing changes for `Hw.Xilinx.PS7` users; a design
   opts into this one. One PS7 per design — they wrap the same hard macro.
 
   ## Why these two paths, together
@@ -83,7 +83,7 @@ defmodule Hw.PS7HP do
   output :fclk_clk1, 1
   output :fclk_reset0_n, 1
 
-  # --- M_AXI_GP0 (identical surface to Hw.PS7) --------------------------------
+  # --- M_AXI_GP0 (identical surface to Hw.Xilinx.PS7) --------------------------------
   input :maxigp0_aclk, 1
 
   output :maxigp0_awid, 12
@@ -197,7 +197,7 @@ defmodule Hw.PS7HP do
   end
 
   # keep="true": a PS7 with nothing connected must still survive synthesis,
-  # or runtime PCAP programming hangs the PS. (Same rule as Hw.PS7.)
+  # or runtime PCAP programming hangs the PS. (Same rule as Hw.Xilinx.PS7.)
   blackbox :ps7, "PS7",
     attrs: [keep: "true"],
     ports: [
