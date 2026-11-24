@@ -1,0 +1,638 @@
+defmodule Hw.ECP5.DP16KD do
+  @moduledoc """
+  ECP5 `DP16KD`. 18 Kbit true dual-port block RAM, widths 1 to 18 per port. INITVAL_00..3F as "0x" + 80 hex digits.
+
+  **Proven on the ULX3S-85F through oxibit-ecp5 (`designs/bram_probe.v`), not through this wrapper.**
+
+  Generated from oxibit-ecp5's primitive declarations (ports) and the
+  yosys Lattice cell library (parameter defaults).
+  """
+
+  use Hw.Component
+
+  param :DATA_WIDTH_A, default: 18
+  param :DATA_WIDTH_B, default: 18
+  param :REGMODE_A, default: "NOREG"
+  param :REGMODE_B, default: "NOREG"
+  param :RESETMODE, default: "SYNC"
+  param :ASYNC_RESET_RELEASE, default: "SYNC"
+  param :CSDECODE_A, default: "0b000"
+  param :CSDECODE_B, default: "0b000"
+  param :WRITEMODE_A, default: "NORMAL"
+  param :WRITEMODE_B, default: "NORMAL"
+  param :DIA17MUX, default: "DIA17"
+  param :DIA16MUX, default: "DIA16"
+  param :DIA15MUX, default: "DIA15"
+  param :DIA14MUX, default: "DIA14"
+  param :DIA13MUX, default: "DIA13"
+  param :DIA12MUX, default: "DIA12"
+  param :DIA11MUX, default: "DIA11"
+  param :DIA10MUX, default: "DIA10"
+  param :DIA9MUX, default: "DIA9"
+  param :DIA8MUX, default: "DIA8"
+  param :DIA7MUX, default: "DIA7"
+  param :DIA6MUX, default: "DIA6"
+  param :DIA5MUX, default: "DIA5"
+  param :DIA4MUX, default: "DIA4"
+  param :DIA3MUX, default: "DIA3"
+  param :DIA2MUX, default: "DIA2"
+  param :DIA1MUX, default: "DIA1"
+  param :DIA0MUX, default: "DIA0"
+  param :ADA13MUX, default: "ADA13"
+  param :ADA12MUX, default: "ADA12"
+  param :ADA11MUX, default: "ADA11"
+  param :ADA10MUX, default: "ADA10"
+  param :ADA9MUX, default: "ADA9"
+  param :ADA8MUX, default: "ADA8"
+  param :ADA7MUX, default: "ADA7"
+  param :ADA6MUX, default: "ADA6"
+  param :ADA5MUX, default: "ADA5"
+  param :ADA4MUX, default: "ADA4"
+  param :ADA3MUX, default: "ADA3"
+  param :ADA2MUX, default: "ADA2"
+  param :ADA1MUX, default: "ADA1"
+  param :ADA0MUX, default: "ADA0"
+  param :CEAMUX, default: "CEA"
+  param :OCEAMUX, default: "OCEA"
+  param :CLKAMUX, default: "CLKA"
+  param :WEAMUX, default: "WEA"
+  param :RSTAMUX, default: "RSTA"
+  param :CSA2MUX, default: "CSA2"
+  param :CSA1MUX, default: "CSA1"
+  param :CSA0MUX, default: "CSA0"
+  param :DOA17MUX, default: "DOA17"
+  param :DOA16MUX, default: "DOA16"
+  param :DOA15MUX, default: "DOA15"
+  param :DOA14MUX, default: "DOA14"
+  param :DOA13MUX, default: "DOA13"
+  param :DOA12MUX, default: "DOA12"
+  param :DOA11MUX, default: "DOA11"
+  param :DOA10MUX, default: "DOA10"
+  param :DOA9MUX, default: "DOA9"
+  param :DOA8MUX, default: "DOA8"
+  param :DOA7MUX, default: "DOA7"
+  param :DOA6MUX, default: "DOA6"
+  param :DOA5MUX, default: "DOA5"
+  param :DOA4MUX, default: "DOA4"
+  param :DOA3MUX, default: "DOA3"
+  param :DOA2MUX, default: "DOA2"
+  param :DOA1MUX, default: "DOA1"
+  param :DOA0MUX, default: "DOA0"
+  param :DIB17MUX, default: "DIB17"
+  param :DIB16MUX, default: "DIB16"
+  param :DIB15MUX, default: "DIB15"
+  param :DIB14MUX, default: "DIB14"
+  param :DIB13MUX, default: "DIB13"
+  param :DIB12MUX, default: "DIB12"
+  param :DIB11MUX, default: "DIB11"
+  param :DIB10MUX, default: "DIB10"
+  param :DIB9MUX, default: "DIB9"
+  param :DIB8MUX, default: "DIB8"
+  param :DIB7MUX, default: "DIB7"
+  param :DIB6MUX, default: "DIB6"
+  param :DIB5MUX, default: "DIB5"
+  param :DIB4MUX, default: "DIB4"
+  param :DIB3MUX, default: "DIB3"
+  param :DIB2MUX, default: "DIB2"
+  param :DIB1MUX, default: "DIB1"
+  param :DIB0MUX, default: "DIB0"
+  param :ADB13MUX, default: "ADB13"
+  param :ADB12MUX, default: "ADB12"
+  param :ADB11MUX, default: "ADB11"
+  param :ADB10MUX, default: "ADB10"
+  param :ADB9MUX, default: "ADB9"
+  param :ADB8MUX, default: "ADB8"
+  param :ADB7MUX, default: "ADB7"
+  param :ADB6MUX, default: "ADB6"
+  param :ADB5MUX, default: "ADB5"
+  param :ADB4MUX, default: "ADB4"
+  param :ADB3MUX, default: "ADB3"
+  param :ADB2MUX, default: "ADB2"
+  param :ADB1MUX, default: "ADB1"
+  param :ADB0MUX, default: "ADB0"
+  param :CEBMUX, default: "CEB"
+  param :OCEBMUX, default: "OCEB"
+  param :CLKBMUX, default: "CLKB"
+  param :WEBMUX, default: "WEB"
+  param :RSTBMUX, default: "RSTB"
+  param :CSB2MUX, default: "CSB2"
+  param :CSB1MUX, default: "CSB1"
+  param :CSB0MUX, default: "CSB0"
+  param :DOB17MUX, default: "DOB17"
+  param :DOB16MUX, default: "DOB16"
+  param :DOB15MUX, default: "DOB15"
+  param :DOB14MUX, default: "DOB14"
+  param :DOB13MUX, default: "DOB13"
+  param :DOB12MUX, default: "DOB12"
+  param :DOB11MUX, default: "DOB11"
+  param :DOB10MUX, default: "DOB10"
+  param :DOB9MUX, default: "DOB9"
+  param :DOB8MUX, default: "DOB8"
+  param :DOB7MUX, default: "DOB7"
+  param :DOB6MUX, default: "DOB6"
+  param :DOB5MUX, default: "DOB5"
+  param :DOB4MUX, default: "DOB4"
+  param :DOB3MUX, default: "DOB3"
+  param :DOB2MUX, default: "DOB2"
+  param :DOB1MUX, default: "DOB1"
+  param :DOB0MUX, default: "DOB0"
+  param :WID, default: 0
+  param :GSR, default: "ENABLED"
+  param :INITVAL_00, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_01, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_02, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_03, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_04, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_05, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_06, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_07, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_08, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_09, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_0A, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_0B, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_0C, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_0D, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_0E, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_0F, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_10, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_11, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_12, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_13, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_14, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_15, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_16, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_17, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_18, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_19, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_1A, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_1B, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_1C, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_1D, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_1E, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_1F, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_20, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_21, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_22, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_23, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_24, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_25, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_26, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_27, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_28, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_29, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_2A, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_2B, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_2C, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_2D, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_2E, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_2F, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_30, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_31, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_32, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_33, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_34, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_35, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_36, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_37, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_38, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_39, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_3A, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_3B, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_3C, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_3D, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_3E, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INITVAL_3F, default: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  param :INIT_DATA, default: "STATIC"
+
+  input :dia17, 1
+  input :dia16, 1
+  input :dia15, 1
+  input :dia14, 1
+  input :dia13, 1
+  input :dia12, 1
+  input :dia11, 1
+  input :dia10, 1
+  input :dia9, 1
+  input :dia8, 1
+  input :dia7, 1
+  input :dia6, 1
+  input :dia5, 1
+  input :dia4, 1
+  input :dia3, 1
+  input :dia2, 1
+  input :dia1, 1
+  input :dia0, 1
+  input :ada13, 1
+  input :ada12, 1
+  input :ada11, 1
+  input :ada10, 1
+  input :ada9, 1
+  input :ada8, 1
+  input :ada7, 1
+  input :ada6, 1
+  input :ada5, 1
+  input :ada4, 1
+  input :ada3, 1
+  input :ada2, 1
+  input :ada1, 1
+  input :ada0, 1
+  input :cea, 1
+  input :ocea, 1
+  input :clka, 1
+  input :wea, 1
+  input :csa2, 1
+  input :csa1, 1
+  input :csa0, 1
+  input :rsta, 1
+  input :dib17, 1
+  input :dib16, 1
+  input :dib15, 1
+  input :dib14, 1
+  input :dib13, 1
+  input :dib12, 1
+  input :dib11, 1
+  input :dib10, 1
+  input :dib9, 1
+  input :dib8, 1
+  input :dib7, 1
+  input :dib6, 1
+  input :dib5, 1
+  input :dib4, 1
+  input :dib3, 1
+  input :dib2, 1
+  input :dib1, 1
+  input :dib0, 1
+  input :adb13, 1
+  input :adb12, 1
+  input :adb11, 1
+  input :adb10, 1
+  input :adb9, 1
+  input :adb8, 1
+  input :adb7, 1
+  input :adb6, 1
+  input :adb5, 1
+  input :adb4, 1
+  input :adb3, 1
+  input :adb2, 1
+  input :adb1, 1
+  input :adb0, 1
+  input :ceb, 1
+  input :oceb, 1
+  input :clkb, 1
+  input :web, 1
+  input :csb2, 1
+  input :csb1, 1
+  input :csb0, 1
+  input :rstb, 1
+  output :doa17, 1
+  output :doa16, 1
+  output :doa15, 1
+  output :doa14, 1
+  output :doa13, 1
+  output :doa12, 1
+  output :doa11, 1
+  output :doa10, 1
+  output :doa9, 1
+  output :doa8, 1
+  output :doa7, 1
+  output :doa6, 1
+  output :doa5, 1
+  output :doa4, 1
+  output :doa3, 1
+  output :doa2, 1
+  output :doa1, 1
+  output :doa0, 1
+  output :dob17, 1
+  output :dob16, 1
+  output :dob15, 1
+  output :dob14, 1
+  output :dob13, 1
+  output :dob12, 1
+  output :dob11, 1
+  output :dob10, 1
+  output :dob9, 1
+  output :dob8, 1
+  output :dob7, 1
+  output :dob6, 1
+  output :dob5, 1
+  output :dob4, 1
+  output :dob3, 1
+  output :dob2, 1
+  output :dob1, 1
+  output :dob0, 1
+
+  blackbox :dp16kd, "DP16KD",
+    params: [
+      DATA_WIDTH_A: :DATA_WIDTH_A,
+      DATA_WIDTH_B: :DATA_WIDTH_B,
+      REGMODE_A: :REGMODE_A,
+      REGMODE_B: :REGMODE_B,
+      RESETMODE: :RESETMODE,
+      ASYNC_RESET_RELEASE: :ASYNC_RESET_RELEASE,
+      CSDECODE_A: :CSDECODE_A,
+      CSDECODE_B: :CSDECODE_B,
+      WRITEMODE_A: :WRITEMODE_A,
+      WRITEMODE_B: :WRITEMODE_B,
+      DIA17MUX: :DIA17MUX,
+      DIA16MUX: :DIA16MUX,
+      DIA15MUX: :DIA15MUX,
+      DIA14MUX: :DIA14MUX,
+      DIA13MUX: :DIA13MUX,
+      DIA12MUX: :DIA12MUX,
+      DIA11MUX: :DIA11MUX,
+      DIA10MUX: :DIA10MUX,
+      DIA9MUX: :DIA9MUX,
+      DIA8MUX: :DIA8MUX,
+      DIA7MUX: :DIA7MUX,
+      DIA6MUX: :DIA6MUX,
+      DIA5MUX: :DIA5MUX,
+      DIA4MUX: :DIA4MUX,
+      DIA3MUX: :DIA3MUX,
+      DIA2MUX: :DIA2MUX,
+      DIA1MUX: :DIA1MUX,
+      DIA0MUX: :DIA0MUX,
+      ADA13MUX: :ADA13MUX,
+      ADA12MUX: :ADA12MUX,
+      ADA11MUX: :ADA11MUX,
+      ADA10MUX: :ADA10MUX,
+      ADA9MUX: :ADA9MUX,
+      ADA8MUX: :ADA8MUX,
+      ADA7MUX: :ADA7MUX,
+      ADA6MUX: :ADA6MUX,
+      ADA5MUX: :ADA5MUX,
+      ADA4MUX: :ADA4MUX,
+      ADA3MUX: :ADA3MUX,
+      ADA2MUX: :ADA2MUX,
+      ADA1MUX: :ADA1MUX,
+      ADA0MUX: :ADA0MUX,
+      CEAMUX: :CEAMUX,
+      OCEAMUX: :OCEAMUX,
+      CLKAMUX: :CLKAMUX,
+      WEAMUX: :WEAMUX,
+      RSTAMUX: :RSTAMUX,
+      CSA2MUX: :CSA2MUX,
+      CSA1MUX: :CSA1MUX,
+      CSA0MUX: :CSA0MUX,
+      DOA17MUX: :DOA17MUX,
+      DOA16MUX: :DOA16MUX,
+      DOA15MUX: :DOA15MUX,
+      DOA14MUX: :DOA14MUX,
+      DOA13MUX: :DOA13MUX,
+      DOA12MUX: :DOA12MUX,
+      DOA11MUX: :DOA11MUX,
+      DOA10MUX: :DOA10MUX,
+      DOA9MUX: :DOA9MUX,
+      DOA8MUX: :DOA8MUX,
+      DOA7MUX: :DOA7MUX,
+      DOA6MUX: :DOA6MUX,
+      DOA5MUX: :DOA5MUX,
+      DOA4MUX: :DOA4MUX,
+      DOA3MUX: :DOA3MUX,
+      DOA2MUX: :DOA2MUX,
+      DOA1MUX: :DOA1MUX,
+      DOA0MUX: :DOA0MUX,
+      DIB17MUX: :DIB17MUX,
+      DIB16MUX: :DIB16MUX,
+      DIB15MUX: :DIB15MUX,
+      DIB14MUX: :DIB14MUX,
+      DIB13MUX: :DIB13MUX,
+      DIB12MUX: :DIB12MUX,
+      DIB11MUX: :DIB11MUX,
+      DIB10MUX: :DIB10MUX,
+      DIB9MUX: :DIB9MUX,
+      DIB8MUX: :DIB8MUX,
+      DIB7MUX: :DIB7MUX,
+      DIB6MUX: :DIB6MUX,
+      DIB5MUX: :DIB5MUX,
+      DIB4MUX: :DIB4MUX,
+      DIB3MUX: :DIB3MUX,
+      DIB2MUX: :DIB2MUX,
+      DIB1MUX: :DIB1MUX,
+      DIB0MUX: :DIB0MUX,
+      ADB13MUX: :ADB13MUX,
+      ADB12MUX: :ADB12MUX,
+      ADB11MUX: :ADB11MUX,
+      ADB10MUX: :ADB10MUX,
+      ADB9MUX: :ADB9MUX,
+      ADB8MUX: :ADB8MUX,
+      ADB7MUX: :ADB7MUX,
+      ADB6MUX: :ADB6MUX,
+      ADB5MUX: :ADB5MUX,
+      ADB4MUX: :ADB4MUX,
+      ADB3MUX: :ADB3MUX,
+      ADB2MUX: :ADB2MUX,
+      ADB1MUX: :ADB1MUX,
+      ADB0MUX: :ADB0MUX,
+      CEBMUX: :CEBMUX,
+      OCEBMUX: :OCEBMUX,
+      CLKBMUX: :CLKBMUX,
+      WEBMUX: :WEBMUX,
+      RSTBMUX: :RSTBMUX,
+      CSB2MUX: :CSB2MUX,
+      CSB1MUX: :CSB1MUX,
+      CSB0MUX: :CSB0MUX,
+      DOB17MUX: :DOB17MUX,
+      DOB16MUX: :DOB16MUX,
+      DOB15MUX: :DOB15MUX,
+      DOB14MUX: :DOB14MUX,
+      DOB13MUX: :DOB13MUX,
+      DOB12MUX: :DOB12MUX,
+      DOB11MUX: :DOB11MUX,
+      DOB10MUX: :DOB10MUX,
+      DOB9MUX: :DOB9MUX,
+      DOB8MUX: :DOB8MUX,
+      DOB7MUX: :DOB7MUX,
+      DOB6MUX: :DOB6MUX,
+      DOB5MUX: :DOB5MUX,
+      DOB4MUX: :DOB4MUX,
+      DOB3MUX: :DOB3MUX,
+      DOB2MUX: :DOB2MUX,
+      DOB1MUX: :DOB1MUX,
+      DOB0MUX: :DOB0MUX,
+      WID: :WID,
+      GSR: :GSR,
+      INITVAL_00: :INITVAL_00,
+      INITVAL_01: :INITVAL_01,
+      INITVAL_02: :INITVAL_02,
+      INITVAL_03: :INITVAL_03,
+      INITVAL_04: :INITVAL_04,
+      INITVAL_05: :INITVAL_05,
+      INITVAL_06: :INITVAL_06,
+      INITVAL_07: :INITVAL_07,
+      INITVAL_08: :INITVAL_08,
+      INITVAL_09: :INITVAL_09,
+      INITVAL_0A: :INITVAL_0A,
+      INITVAL_0B: :INITVAL_0B,
+      INITVAL_0C: :INITVAL_0C,
+      INITVAL_0D: :INITVAL_0D,
+      INITVAL_0E: :INITVAL_0E,
+      INITVAL_0F: :INITVAL_0F,
+      INITVAL_10: :INITVAL_10,
+      INITVAL_11: :INITVAL_11,
+      INITVAL_12: :INITVAL_12,
+      INITVAL_13: :INITVAL_13,
+      INITVAL_14: :INITVAL_14,
+      INITVAL_15: :INITVAL_15,
+      INITVAL_16: :INITVAL_16,
+      INITVAL_17: :INITVAL_17,
+      INITVAL_18: :INITVAL_18,
+      INITVAL_19: :INITVAL_19,
+      INITVAL_1A: :INITVAL_1A,
+      INITVAL_1B: :INITVAL_1B,
+      INITVAL_1C: :INITVAL_1C,
+      INITVAL_1D: :INITVAL_1D,
+      INITVAL_1E: :INITVAL_1E,
+      INITVAL_1F: :INITVAL_1F,
+      INITVAL_20: :INITVAL_20,
+      INITVAL_21: :INITVAL_21,
+      INITVAL_22: :INITVAL_22,
+      INITVAL_23: :INITVAL_23,
+      INITVAL_24: :INITVAL_24,
+      INITVAL_25: :INITVAL_25,
+      INITVAL_26: :INITVAL_26,
+      INITVAL_27: :INITVAL_27,
+      INITVAL_28: :INITVAL_28,
+      INITVAL_29: :INITVAL_29,
+      INITVAL_2A: :INITVAL_2A,
+      INITVAL_2B: :INITVAL_2B,
+      INITVAL_2C: :INITVAL_2C,
+      INITVAL_2D: :INITVAL_2D,
+      INITVAL_2E: :INITVAL_2E,
+      INITVAL_2F: :INITVAL_2F,
+      INITVAL_30: :INITVAL_30,
+      INITVAL_31: :INITVAL_31,
+      INITVAL_32: :INITVAL_32,
+      INITVAL_33: :INITVAL_33,
+      INITVAL_34: :INITVAL_34,
+      INITVAL_35: :INITVAL_35,
+      INITVAL_36: :INITVAL_36,
+      INITVAL_37: :INITVAL_37,
+      INITVAL_38: :INITVAL_38,
+      INITVAL_39: :INITVAL_39,
+      INITVAL_3A: :INITVAL_3A,
+      INITVAL_3B: :INITVAL_3B,
+      INITVAL_3C: :INITVAL_3C,
+      INITVAL_3D: :INITVAL_3D,
+      INITVAL_3E: :INITVAL_3E,
+      INITVAL_3F: :INITVAL_3F,
+      INIT_DATA: :INIT_DATA
+    ],
+    ports: [
+      DIA17: :dia17,
+      DIA16: :dia16,
+      DIA15: :dia15,
+      DIA14: :dia14,
+      DIA13: :dia13,
+      DIA12: :dia12,
+      DIA11: :dia11,
+      DIA10: :dia10,
+      DIA9: :dia9,
+      DIA8: :dia8,
+      DIA7: :dia7,
+      DIA6: :dia6,
+      DIA5: :dia5,
+      DIA4: :dia4,
+      DIA3: :dia3,
+      DIA2: :dia2,
+      DIA1: :dia1,
+      DIA0: :dia0,
+      ADA13: :ada13,
+      ADA12: :ada12,
+      ADA11: :ada11,
+      ADA10: :ada10,
+      ADA9: :ada9,
+      ADA8: :ada8,
+      ADA7: :ada7,
+      ADA6: :ada6,
+      ADA5: :ada5,
+      ADA4: :ada4,
+      ADA3: :ada3,
+      ADA2: :ada2,
+      ADA1: :ada1,
+      ADA0: :ada0,
+      CEA: :cea,
+      OCEA: :ocea,
+      CLKA: :clka,
+      WEA: :wea,
+      CSA2: :csa2,
+      CSA1: :csa1,
+      CSA0: :csa0,
+      RSTA: :rsta,
+      DIB17: :dib17,
+      DIB16: :dib16,
+      DIB15: :dib15,
+      DIB14: :dib14,
+      DIB13: :dib13,
+      DIB12: :dib12,
+      DIB11: :dib11,
+      DIB10: :dib10,
+      DIB9: :dib9,
+      DIB8: :dib8,
+      DIB7: :dib7,
+      DIB6: :dib6,
+      DIB5: :dib5,
+      DIB4: :dib4,
+      DIB3: :dib3,
+      DIB2: :dib2,
+      DIB1: :dib1,
+      DIB0: :dib0,
+      ADB13: :adb13,
+      ADB12: :adb12,
+      ADB11: :adb11,
+      ADB10: :adb10,
+      ADB9: :adb9,
+      ADB8: :adb8,
+      ADB7: :adb7,
+      ADB6: :adb6,
+      ADB5: :adb5,
+      ADB4: :adb4,
+      ADB3: :adb3,
+      ADB2: :adb2,
+      ADB1: :adb1,
+      ADB0: :adb0,
+      CEB: :ceb,
+      OCEB: :oceb,
+      CLKB: :clkb,
+      WEB: :web,
+      CSB2: :csb2,
+      CSB1: :csb1,
+      CSB0: :csb0,
+      RSTB: :rstb,
+      DOA17: :doa17,
+      DOA16: :doa16,
+      DOA15: :doa15,
+      DOA14: :doa14,
+      DOA13: :doa13,
+      DOA12: :doa12,
+      DOA11: :doa11,
+      DOA10: :doa10,
+      DOA9: :doa9,
+      DOA8: :doa8,
+      DOA7: :doa7,
+      DOA6: :doa6,
+      DOA5: :doa5,
+      DOA4: :doa4,
+      DOA3: :doa3,
+      DOA2: :doa2,
+      DOA1: :doa1,
+      DOA0: :doa0,
+      DOB17: :dob17,
+      DOB16: :dob16,
+      DOB15: :dob15,
+      DOB14: :dob14,
+      DOB13: :dob13,
+      DOB12: :dob12,
+      DOB11: :dob11,
+      DOB10: :dob10,
+      DOB9: :dob9,
+      DOB8: :dob8,
+      DOB7: :dob7,
+      DOB6: :dob6,
+      DOB5: :dob5,
+      DOB4: :dob4,
+      DOB3: :dob3,
+      DOB2: :dob2,
+      DOB1: :dob1,
+      DOB0: :dob0
+    ]
+end
