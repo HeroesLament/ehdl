@@ -99,3 +99,6 @@ designs/**/*.lpf
 designs/**/*.err
 designs/**/*.log
 designs/**/build_*/
+
+# escript built by mix escript.build
+/ehdl

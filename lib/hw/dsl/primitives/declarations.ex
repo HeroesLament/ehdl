@@ -214,7 +214,7 @@ defmodule Hw.DSL.Primitives.Declarations do
   @doc """
   Replicate a 1-bit register so its consumers spread over `copies`
   identical registers, zero latency. Use it on a select or enable that
-  drives too many LUT inputs (see `mix hw.census`). Lowered after
+  drives too many LUT inputs (see `ehdl census`). Lowered after
   flattening by `Hw.Compile.Fanout`.
 
       wire :ldsel, 1, init: 0

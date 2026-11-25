@@ -192,7 +192,7 @@ defmodule Hw.Analysis do
 
   # A rule that raises must not take the whole suite down with it.
   #
-  # Module discovery in `mix hw.check` used to return nothing, so the suite
+  # Module discovery in `ehdl check` used to return nothing, so the suite
   # never actually ran and a rule could rot unnoticed. Isolating failures means
   # one stale rule costs that rule's coverage and nothing else, and reports
   # itself instead of aborting the run.

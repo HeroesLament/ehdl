@@ -11,6 +11,7 @@ defmodule EHDL.MixProject do
       package: package(),
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
+      escript: [main_module: Hw.CLI, name: "ehdl"],
       deps: deps()
     ]
   end
@@ -33,7 +34,8 @@ defmodule EHDL.MixProject do
   defp deps do
     [
       {:elixir_scope, path: "../ex_dbg", optional: true, only: [:dev, :test]},
-      {:rustler, "~> 0.37", runtime: false}
+      {:rustler, "~> 0.37", runtime: false},
+      {:cheer, "~> 0.3"}
     ]
   end
 end

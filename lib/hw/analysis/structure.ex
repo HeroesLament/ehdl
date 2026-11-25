@@ -4,7 +4,7 @@ defmodule Hw.Analysis.Structure do
   structural analysis rules.
 
   Names in the flattened IR are the names the flat Verilog emitter writes,
-  so anything found here can be looked up in `mix hw.census` output for the
+  so anything found here can be looked up in `ehdl census` output for the
   synthesised netlist.
   """
 

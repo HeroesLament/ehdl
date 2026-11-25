@@ -1,7 +1,7 @@
 defmodule Hw.Target do
   @moduledoc """
   Per-device structural budgets, the single source of thresholds for
-  `mix hw.census` (and, later, the structural `hw.check` rules).
+  `ehdl census` (and, later, the structural `ehdl check` rules).
 
   Budgets come from measured place-and-route runs, not datasheets. For
   xc7z020 with nextpnr-himbaechel router2 (OpenOcuSync RX/PHY, 2026-10):

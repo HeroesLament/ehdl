@@ -168,6 +168,7 @@ cd ehdl
 mix deps.get
 mix compile          # also builds the native simulator NIF
 mix test
+mix escript.install  # puts the `ehdl` command on PATH
 ```
 
 ## Usage
@@ -177,13 +178,13 @@ testbenches are ordinary ExUnit tests — drive inputs, tick the clock, assert o
 signals. See `test/` for the HelloBoard UART, PHY, CDC, and loopback benches,
 and the trace/query helpers for waveform-style assertions.
 
-**Analyze.** `mix hw.check` runs a hardware-aware linter over all compiled
+**Analyze.** `ehdl check` runs a hardware-aware linter over all compiled
 components and exits non-zero on errors (CI-friendly):
 
 ```bash
-mix hw.check
-mix hw.check --modules Hw.USB.SIE,Hw.USB.CDCSerial
-mix hw.check --warnings-as-errors
+ehdl check
+ehdl check Hw.USB.SIE
+ehdl check --warnings-as-errors
 ```
 
 Rules include combinational-loop detection, clock-domain-crossing checks,
@@ -191,19 +192,27 @@ multiple-driver / undriven-output / unconnected-input analysis, latch inference,
 reset coverage, signal-width and endianness mismatches, and more (see
 `lib/hw/analysis/rules/`).
 
-**Emit Verilog.** Elaborate a component and call `Hw.emit/1` to get
-synthesizable Verilog for your toolchain (e.g. Yosys + nextpnr-ecp5 for the
-ULX3S).
+**Emit Verilog.** `ehdl emit` writes a component's synthesizable Verilog, and
+`ehdl build` carries on through oxibit to a bitstream. A design is a single
+file, or a module of the Mix project in the current directory:
 
-**Diagram.** `mix hw.diagram` renders a component's wiring as Typst/SVG/PDF,
+```bash
+ehdl emit blinky.ex              # blinky.v
+ehdl build blinky.ex --load      # blinky.bit, loaded onto the board
+ehdl emit HelloBoard.Top -o -    # in a Mix project, to stdout
+```
+
+From Elixir, `Hw.emit/1` returns the same Verilog.
+
+**Diagram.** `ehdl diagram` renders a component's wiring as Typst/SVG/PDF,
 Graphviz DOT, or Mermaid:
 
 ```bash
-mix hw.diagram HelloBoard.Top --format svg --output diagram.svg
-mix hw.diagram HelloBoard.Top --format mermaid
+ehdl diagram HelloBoard.Top --format svg -o diagram.svg
+ehdl diagram HelloBoard.Top --format mermaid
 ```
 
-**Snapshot.** `mix hw.snapshot` writes a filtered source tarball
+**Snapshot.** `ehdl snapshot` writes a filtered source tarball
 (`~/ehdl_snapshot_*.tar.gz`), excluding build artifacts.
 
 ## Project layout
